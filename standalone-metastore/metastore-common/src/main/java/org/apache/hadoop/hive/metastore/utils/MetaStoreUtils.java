@@ -23,9 +23,12 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.sql.Date;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,6 +55,7 @@ import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.common.TableName;
 import org.apache.hadoop.hive.common.repl.ReplConst;
 import org.apache.hadoop.hive.metastore.ColumnType;
+import org.apache.hadoop.hive.metastore.HiveMetaHook;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
@@ -74,25 +78,54 @@ import org.slf4j.LoggerFactory;
 import com.google.common.base.Joiner;
 
 public class MetaStoreUtils {
-  /** A fixed date format to be used for hive partition column values. */
-  public static final ThreadLocal<DateFormat> PARTITION_DATE_FORMAT =
-       new ThreadLocal<DateFormat>() {
-    @Override
-    protected DateFormat initialValue() {
-      DateFormat val = new SimpleDateFormat("yyyy-MM-dd");
-      val.setLenient(false); // Without this, 2020-20-20 becomes 2021-08-20.
-      val.setTimeZone(TimeZone.getTimeZone("UTC"));
-      return val;
-    }
-  };
-  public static final ThreadLocal<DateTimeFormatter> PARTITION_TIMESTAMP_FORMAT =
-      new ThreadLocal<DateTimeFormatter>() {
-        @Override
-        protected DateTimeFormatter initialValue() {
-          return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").
-              withZone(TimeZone.getTimeZone("UTC").toZoneId());
-        }
-  };
+
+  private static final DateTimeFormatter DATE_FORMATTER = createDateTimeFormatter("uuuu-MM-dd");
+
+  private static final DateTimeFormatter TIMESTAMP_FORMATTER = createDateTimeFormatter("uuuu-MM-dd HH:mm:ss");
+
+  private static DateTimeFormatter createDateTimeFormatter(String format) {
+    return DateTimeFormatter.ofPattern(format).withZone(TimeZone.getTimeZone("UTC").toZoneId())
+        .withResolverStyle(ResolverStyle.STRICT);
+  }
+
+  /**
+   * Converts java.sql.Date to String format date.
+   * @param date - java.sql.Date object.
+   * @return Date in string format.
+   */
+  public static String convertDateToString(Date date) {
+    return DATE_FORMATTER.format(date.toLocalDate());
+  }
+
+  /**
+   * Converts string format date to java.sql.Date.
+   * @param date Date in string format.
+   * @return java.sql.Date object.
+   */
+  public static Date convertStringToDate(String date) {
+    LocalDate val = LocalDate.parse(date, DATE_FORMATTER);
+    return java.sql.Date.valueOf(val);
+  }
+
+  /**
+   * Converts java.sql.Timestamp to string format timestamp.
+   * @param timestamp java.sql.Timestamp object.
+   * @return Timestamp in string format.
+   */
+  public static String convertTimestampToString(Timestamp timestamp) {
+    return TIMESTAMP_FORMATTER.format(timestamp.toLocalDateTime());
+  }
+
+  /**
+   * Converts timestamp string format to java.sql.Timestamp.
+   * @param timestamp Timestamp in string format.
+   * @return java.sql.Timestamp object.
+   */
+  public static Timestamp convertStringToTimestamp(String timestamp) {
+    LocalDateTime val = LocalDateTime.from(TIMESTAMP_FORMATTER.parse(timestamp));
+    return Timestamp.valueOf(val);
+  }
+
   // Indicates a type was derived from the deserializer rather than Hive's metadata.
   public static final String TYPE_FROM_DESERIALIZER = "<derived from deserializer>";
 
@@ -254,10 +287,14 @@ public class MetaStoreUtils {
     return isExternal(params);
   }
 
+  public static boolean isIcebergTable(Map<String, String> params) {
+    return HiveMetaHook.ICEBERG.equalsIgnoreCase(params.get(HiveMetaHook.TABLE_TYPE));
+  }
+
   public static boolean isTranslatedToExternalTable(Table table) {
     Map<String, String> params = table.getParameters();
-    return params != null && MetaStoreUtils.isPropertyTrue(params, "EXTERNAL")
-        && MetaStoreUtils.isPropertyTrue(params, "TRANSLATED_TO_EXTERNAL") && table.getSd() != null
+    return params != null && MetaStoreUtils.isPropertyTrue(params, HiveMetaHook.EXTERNAL)
+        && MetaStoreUtils.isPropertyTrue(params, HiveMetaHook.TRANSLATED_TO_EXTERNAL) && table.getSd() != null
         && table.getSd().isSetLocation();
   }
 
@@ -274,7 +311,7 @@ public class MetaStoreUtils {
     return dbParameters != null && ReplConst.TRUE.equalsIgnoreCase(dbParameters.get(ReplConst.REPL_INCOMPATIBLE));
   }
 
-  public static boolean isDbBeingFailedOver(Database db) {
+  public static boolean isDbBeingPlannedFailedOver(Database db) {
     assert (db != null);
     Map<String, String> dbParameters = db.getParameters();
     if (dbParameters == null) {
@@ -285,7 +322,7 @@ public class MetaStoreUtils {
             || FailoverEndpoint.TARGET.toString().equalsIgnoreCase(dbFailoverEndPoint);
   }
 
-  public static boolean isDbBeingFailedOverAtEndpoint(Database db, FailoverEndpoint endPoint) {
+  public static boolean isDbBeingPlannedFailedOverAtEndpoint(Database db, FailoverEndpoint endPoint) {
     if (db == null) {
       return false;
     }
@@ -310,7 +347,7 @@ public class MetaStoreUtils {
     assert (db != null);
     if (isBackgroundThreadsEnabledForRepl(db)) {
       return false;
-    } else if (isDbBeingFailedOver(db)) {
+    } else if (isDbBeingPlannedFailedOver(db)) {
       LOG.info("Skipping all the tables which belong to database: {} as it is being failed over", db.getName());
       return true;
     } else if (isTargetOfReplication(db)) {
@@ -1227,6 +1264,23 @@ public class MetaStoreUtils {
       result.setId(tableId);
     }
     return result;
+  }
+
+  public static <T> T createThriftPartitionsReq(Class<T> clazz, Configuration conf, T... deepCopy) {
+    final T req;
+    if (deepCopy != null && deepCopy.length == 1) {
+      assert clazz.isAssignableFrom(deepCopy[0].getClass());
+      req = JavaUtils.newInstance(clazz, new Class[]{clazz}, deepCopy);
+    } else {
+      req = JavaUtils.newInstance(clazz);
+    }
+    JavaUtils.setField(req, "setSkipColumnSchemaForPartition", new Class[]{boolean.class},
+        MetastoreConf.getBoolVar(conf, MetastoreConf.ConfVars.METASTORE_CLIENT_FIELD_SCHEMA_FOR_PARTITIONS));
+    JavaUtils.setField(req, "setIncludeParamKeyPattern", new Class[]{String.class},
+        MetastoreConf.getAsString(conf, MetastoreConf.ConfVars.METASTORE_PARTITIONS_PARAMETERS_INCLUDE_PATTERN));
+    JavaUtils.setField(req, "setExcludeParamKeyPattern", new Class[]{String.class},
+        MetastoreConf.getAsString(conf, MetastoreConf.ConfVars.METASTORE_PARTITIONS_PARAMETERS_EXCLUDE_PATTERN));
+    return req;
   }
 
   /**

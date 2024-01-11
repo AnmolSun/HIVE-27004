@@ -264,6 +264,10 @@ sys	partitions			hive_test_user	USER	DELETE	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	INSERT	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	SELECT	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	UPDATE	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	DELETE	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	INSERT	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	SELECT	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	UPDATE	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	DELETE	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	INSERT	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	SELECT	true	-1	hive_test_user
@@ -536,6 +540,7 @@ compactions	c_initiator_version
 compactions	c_next_txn_id
 compactions	c_next_txn_id
 compactions	c_number_of_buckets
+compactions	c_number_of_buckets
 compactions	c_partition
 compactions	c_partition
 compactions	c_pool_name
@@ -779,6 +784,9 @@ partitions	part_id
 partitions	part_name
 partitions	sd_id
 partitions	tbl_id
+replication_failover_failback_metrics	db_name
+replication_failover_failback_metrics	db_repl_metrics_name
+replication_failover_failback_metrics	db_repl_metrics_value
 replication_metrics	dump_execution_id
 replication_metrics	metadata
 replication_metrics	policy_name
@@ -1305,7 +1313,7 @@ POSTHOOK: query: select count(*) from sds
 POSTHOOK: type: QUERY
 POSTHOOK: Input: sys@sds
 #### A masked pattern was here ####
-78
+79
 PREHOOK: query: select param_key, param_value from sd_params order by param_key, param_value limit 5
 PREHOOK: type: QUERY
 PREHOOK: Input: sys@sd_params
@@ -1474,7 +1482,7 @@ POSTHOOK: type: QUERY
 POSTHOOK: Input: _dummy_database@_dummy_table
 POSTHOOK: Input: sys@version
 #### A masked pattern was here ####
-4.0.0
+4.0.0-beta-2
 PREHOOK: query: select func_name, func_type from funcs order by func_name, func_type limit 5
 PREHOOK: type: QUERY
 PREHOOK: Input: sys@funcs
@@ -1632,8 +1640,8 @@ POSTHOOK: Input: sys@compaction_queue
 POSTHOOK: Input: sys@compactions
 POSTHOOK: Input: sys@completed_compactions
 #### A masked pattern was here ####
-1	default	default	scr_txn	NULL	major	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-SNAPSHOT	NULL	default	NULL	NULL
-2	default	default	scr_txn_2	NULL	minor	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-SNAPSHOT	NULL	default	NULL	NULL
+1	default	default	scr_txn	NULL	major	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-beta-2-SNAPSHOT	NULL	default	NULL	NULL
+2	default	default	scr_txn_2	NULL	minor	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-beta-2-SNAPSHOT	NULL	default	NULL	NULL
 PREHOOK: query: use INFORMATION_SCHEMA
 PREHOOK: type: SWITCHDATABASE
 PREHOOK: Input: database:information_schema
@@ -1715,6 +1723,7 @@ default	sys	partition_keys	BASE_TABLE	NULL	NULL	NULL	NULL	NULL	YES	NO	NULL
 default	sys	partition_params	BASE_TABLE	NULL	NULL	NULL	NULL	NULL	YES	NO	NULL
 default	sys	partition_stats_view	VIEW	NULL	NULL	NULL	NULL	NULL	NO	NO	NULL
 default	sys	partitions	BASE_TABLE	NULL	NULL	NULL	NULL	NULL	YES	NO	NULL
+default	sys	replication_failover_failback_metrics	VIEW	NULL	NULL	NULL	NULL	NULL	NO	NO	NULL
 default	sys	replication_metrics	VIEW	NULL	NULL	NULL	NULL	NULL	NO	NO	NULL
 default	sys	replication_metrics_orig	BASE_TABLE	NULL	NULL	NULL	NULL	NULL	YES	NO	NULL
 default	sys	role_map	BASE_TABLE	NULL	NULL	NULL	NULL	NULL	YES	NO	NULL
@@ -1842,6 +1851,7 @@ information_schema	views
 sys	compactions
 sys	locks
 sys	partition_stats_view
+sys	replication_failover_failback_metrics
 sys	replication_metrics
 sys	table_stats_view
 sys	transactions
@@ -1866,8 +1876,8 @@ POSTHOOK: Input: sys@dbs
 POSTHOOK: Input: sys@tbl_privs
 POSTHOOK: Input: sys@tbls
 #### A masked pattern was here ####
-1	default	default	scr_txn	NULL	major	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-SNAPSHOT	NULL	default	NULL
-2	default	default	scr_txn_2	NULL	minor	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-SNAPSHOT	NULL	default	NULL
+1	default	default	scr_txn	NULL	major	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-beta-2-SNAPSHOT	NULL	default	NULL	NULL
+2	default	default	scr_txn_2	NULL	minor	initiated	NULL	NULL	NULL	#Masked#	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	NULL	#Masked#	manual	4.0.0-beta-2-SNAPSHOT	NULL	default	NULL	NULL
 PREHOOK: query: select TXN_ID, STATE, AGENT_INFO, META_INFO, HEARTBEAT_COUNT, TYPE, TC_DATABASE, TC_TABLE, TC_PARTITION, TC_OPERATION_TYPE, TC_WRITEID from TRANSACTIONS
 PREHOOK: type: QUERY
 PREHOOK: Input: information_schema@transactions

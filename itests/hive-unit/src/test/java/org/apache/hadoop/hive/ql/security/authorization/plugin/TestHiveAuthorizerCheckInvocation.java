@@ -107,7 +107,7 @@ public class TestHiveAuthorizerCheckInvocation {
     conf.setBoolVar(ConfVars.HIVE_SUPPORT_CONCURRENCY, true);
     conf.setVar(ConfVars.HIVE_TXN_MANAGER, DbTxnManager.class.getName());
     conf.setBoolVar(ConfVars.HIVE_QUERY_RESULTS_CACHE_ENABLED, true);
-    conf.setVar(HiveConf.ConfVars.HIVEMAPREDMODE, "nonstrict");
+    conf.setVar(HiveConf.ConfVars.HIVE_MAPRED_MODE, "nonstrict");
     conf.setBoolVar(ConfVars.HIVE_TEST_AUTHORIZATION_SQLSTD_HS2_MODE, true);
     conf.setBoolVar(ConfVars.HIVE_ZOOKEEPER_KILLQUERY_ENABLE, false);
 
@@ -316,22 +316,13 @@ public class TestHiveAuthorizerCheckInvocation {
     List<HivePrivilegeObject> outputs = getHivePrivilegeObjectInputs().getRight();
 
     HivePrivilegeObject funcObj;
-    HivePrivilegeObject dbObj;
-    assertEquals("number of output objects", 2, outputs.size());
-    if(outputs.get(0).getType() == HivePrivilegeObjectType.FUNCTION) {
-      funcObj = outputs.get(0);
-      dbObj = outputs.get(1);
-    } else {
-      funcObj = outputs.get(1);
-      dbObj = outputs.get(0);
-    }
+    assertEquals("number of output objects", 1, outputs.size());
+
+    funcObj = outputs.get(0);
 
     assertEquals("input type", HivePrivilegeObjectType.FUNCTION, funcObj.getType());
     assertTrue("function name", funcName.equalsIgnoreCase(funcObj.getObjectName()));
     assertTrue("db name", dbName.equalsIgnoreCase(funcObj.getDbname()));
-
-    assertEquals("input type", HivePrivilegeObjectType.DATABASE, dbObj.getType());
-    assertTrue("db name", dbName.equalsIgnoreCase(dbObj.getDbname()));
 
     // actually create the permanent function
     driver.run();

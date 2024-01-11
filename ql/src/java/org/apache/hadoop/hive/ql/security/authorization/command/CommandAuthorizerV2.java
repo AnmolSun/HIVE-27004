@@ -28,6 +28,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.DataConnector;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.ql.exec.FunctionInfo;
 import org.apache.hadoop.hive.ql.exec.FunctionUtils;
 import org.apache.hadoop.hive.ql.exec.FunctionInfo.FunctionType;
@@ -199,9 +200,10 @@ final class CommandAuthorizerV2 {
       if (table.getStorageHandler() != null && HiveConf.getBoolVar(SessionState.getSessionConf(),
           HiveConf.ConfVars.HIVE_AUTHORIZATION_TABLES_ON_STORAGEHANDLERS)) {
         //TODO: add hive privilege object for storage based handlers for create and alter table commands.
-        if (hiveOpType == HiveOperationType.CREATETABLE ||
+        if (privObject instanceof WriteEntity &&
+                (hiveOpType == HiveOperationType.CREATETABLE ||
                 hiveOpType == HiveOperationType.ALTERTABLE_PROPERTIES ||
-                hiveOpType == HiveOperationType.CREATETABLE_AS_SELECT) {
+                hiveOpType == HiveOperationType.CREATETABLE_AS_SELECT)) {
           try {
             String storageUri = table.getStorageHandler().getURIForAuth(table.getTTable()).toString();
             hivePrivObjs.add(new HivePrivilegeObject(HivePrivilegeObjectType.STORAGEHANDLER_URI, null, storageUri, null, null,
@@ -219,14 +221,24 @@ final class CommandAuthorizerV2 {
           actionType, null, null, null, null);
       break;
     case FUNCTION:
-      String dbName = privObject.getDatabase() != null ? privObject.getDatabase().getName() : null;
-      hivePrivObject = new HivePrivilegeObject(privObjType, dbName, privObject.getFunctionName(),
-          null, null, actionType, null, privObject.getClassName(), null, null);
+      if (privObject.getFunction() != null) {
+        Function function = privObject.getFunction();
+        hivePrivObject = new HivePrivilegeObject(privObjType, function.getDbName(), function.getFunctionName(),
+                null, null, actionType, null, function.getClassName(), function.getOwnerName(), function.getOwnerType());
+      } else {
+        String dbName = privObject.getDatabase() != null ? privObject.getDatabase().getName() : null;
+        hivePrivObject = new HivePrivilegeObject(privObjType, dbName, privObject.getFunctionName(),
+                null, null, actionType, null, privObject.getClassName(), null, null);
+      }
       break;
     case DUMMYPARTITION:
     case PARTITION:
-      // TODO: not currently handled
-      return;
+      Table tbl = privObject.getTable();
+      List<String> col = tableName2Cols == null ? null :
+              tableName2Cols.get(Table.getCompleteName(tbl.getDbName(), tbl.getTableName()));
+      hivePrivObject = new HivePrivilegeObject(privObjType, tbl.getDbName(), tbl.getTableName(),
+              null, col, actionType, null, null, tbl.getOwner(), tbl.getOwnerType());
+      break;
     case SERVICE_NAME:
       hivePrivObject = new HivePrivilegeObject(privObjType, null, privObject.getServiceName(), null,
           null, actionType, null, null, null, null);

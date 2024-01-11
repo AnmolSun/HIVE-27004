@@ -19,10 +19,7 @@ package org.apache.hadoop.hive.ql;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.IMetaStoreClient;
-import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.ShowCompactRequest;
 import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
@@ -31,6 +28,7 @@ import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.hive.ql.io.BucketCodec;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorException;
+import org.apache.hadoop.hive.ql.session.SessionState;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -40,7 +38,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -310,7 +307,7 @@ public class TestTxnNoBuckets extends TxnCommandsBaseForTests {
   @Test
   public void testInsertToAcidWithUnionRemove() throws Exception {
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPTIMIZE_UNION_REMOVE, true);
-    hiveConf.setVar(HiveConf.ConfVars.HIVEFETCHTASKCONVERSION, "none");
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_FETCH_TASK_CONVERSION, "none");
     d.close();
     d = new Driver(hiveConf);
     int[][] values = {{1,2},{3,4},{5,6},{7,8},{9,10}};
@@ -349,7 +346,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
   @Test
   public void testInsertOverwriteToAcidWithUnionRemove() throws Exception {
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPTIMIZE_UNION_REMOVE, true);
-    hiveConf.setVar(HiveConf.ConfVars.HIVEFETCHTASKCONVERSION, "none");
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_FETCH_TASK_CONVERSION, "none");
     d.close();
     d = new Driver(hiveConf);
     int[][] values = {{1, 2}, {3, 4}, {5, 6}, {7, 8}, {9, 10}};
@@ -373,9 +370,9 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
   @Test
   public void testToAcidConversionMultiBucket() throws Exception {
     //need to disable these so that automatic merge doesn't merge the files
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVEMERGEMAPFILES, false);
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVEMERGEMAPREDFILES, false);
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVEMERGETEZFILES, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_MERGE_MAPFILES, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_MERGE_MAPRED_FILES, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_MERGE_TEZ_FILES, false);
     d.close();
     d = new Driver(hiveConf);
 
@@ -403,7 +400,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
 
     //now do Insert from Union here to create data files in sub dirs
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPTIMIZE_UNION_REMOVE, true);
-    hiveConf.setVar(HiveConf.ConfVars.HIVEFETCHTASKCONVERSION, "none");
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_FETCH_TASK_CONVERSION, "none");
     d.close();
     d = new Driver(hiveConf);
     runStatementOnDriver("insert into T(a,b) select a * 10, b * 10 from " + Table.ACIDTBL +
@@ -664,7 +661,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
   @Test
   public void testNonAcidToAcidVectorzied() throws Exception {
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_VECTORIZATION_ENABLED, true);
-    hiveConf.setVar(HiveConf.ConfVars.HIVEFETCHTASKCONVERSION, "none");
+    hiveConf.setVar(HiveConf.ConfVars.HIVE_FETCH_TASK_CONVERSION, "none");
     //this enables vectorization of ROW__ID
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_VECTORIZATION_ROW_IDENTIFIER_ENABLED, true);//HIVE-12631
     runStatementOnDriver("drop table if exists T");
@@ -772,7 +769,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
    */
   @Test
   public void testCompactStatsGather() throws Exception {
-    hiveConf.setIntVar(HiveConf.ConfVars.HIVEOPTSORTDYNAMICPARTITIONTHRESHOLD, -1);
+    hiveConf.setIntVar(HiveConf.ConfVars.HIVE_OPT_SORT_DYNAMIC_PARTITION_THRESHOLD, -1);
     runStatementOnDriver("drop table if exists T");
     runStatementOnDriver("create table T(a int, b int) partitioned by (p int, q int) " +
       "stored as orc TBLPROPERTIES ('transactional'='true')");
@@ -793,7 +790,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
             .getParameters();
     Assert.assertEquals("The number of files is differing from the expected", "1", parameters.get("numFiles"));
     Assert.assertEquals("The number of rows is differing from the expected", "2", parameters.get("numRows"));
-    Assert.assertEquals("The total table size is differing from the expected", "686", parameters.get("totalSize"));
+    Assert.assertEquals("The total table size is differing from the expected", "692", parameters.get("totalSize"));
 
     int[][] targetVals2 = {{5, 1, 1}, {5, 2, 2}, {5, 3, 1}, {5, 4, 2}};
     runStatementOnDriver("insert into T partition(p=1,q) " + makeValuesClause(targetVals2));
@@ -847,7 +844,7 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
             .getParameters();
     Assert.assertEquals("The number of files is differing from the expected", "1", parameters.get("numFiles"));
     Assert.assertEquals("The number of rows is differing from the expected", "4", parameters.get("numRows"));
-    Assert.assertEquals("The total table size is differing from the expected", "698", parameters.get("totalSize"));
+    Assert.assertEquals("The total table size is differing from the expected", "705", parameters.get("totalSize"));
   }
 
   @Test
@@ -908,6 +905,32 @@ ekoifman:apache-hive-3.0.0-SNAPSHOT-bin ekoifman$ tree /Users/ekoifman/dev/hiver
     rs = runStatementOnDriver("select a, b from T order by a, b");
     Assert.assertEquals(stringifyValues(data), rs);
 
+  }
+
+  /**
+   * HIVE-27268
+   */
+  @Test
+  public void testGetPartitionsNoSession() throws Exception {
+    hiveConf.setIntVar(HiveConf.ConfVars.HIVE_OPT_SORT_DYNAMIC_PARTITION_THRESHOLD, -1);
+    runStatementOnDriver("drop table if exists T");
+    runStatementOnDriver("create table T(a int, b int) partitioned by (p int, q int) " +
+        "stored as orc TBLPROPERTIES ('transactional'='true')");
+
+    int[][] targetVals = {{4, 1, 1}, {4, 2, 2}, {4, 3, 1}, {4, 4, 2}};
+    //we only recompute stats after major compact if they existed before
+    runStatementOnDriver("insert into T partition(p=1,q) " + makeValuesClause(targetVals));
+    runStatementOnDriver("analyze table T  partition(p=1) compute statistics for columns");
+
+    Hive hive = Hive.get();
+    org.apache.hadoop.hive.ql.metadata.Table hiveTable = hive.getTable("T");
+    // this will ensure the getValidWriteIdList has no session to work with (thru getPartitions)
+    SessionState.detachSession();
+    List<org.apache.hadoop.hive.ql.metadata.Partition> partitions = hive.getPartitions(hiveTable);
+    Assert.assertNotNull(partitions);
+    // prevent tear down failure
+    d.close();
+    d = null;
   }
 }
 

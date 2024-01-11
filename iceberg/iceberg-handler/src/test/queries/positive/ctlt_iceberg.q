@@ -45,3 +45,15 @@ create table emp_like2 like emp stored by iceberg;
 -- Partition column should be there
 show create table emp_like2;
 
+set hive.support.concurrency=true;
+set hive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
+
+-- create a managed table
+create managed table man_table (id int) Stored as orc TBLPROPERTIES ('transactional'='true');
+
+create table like_man_table like man_table stored by iceberg;
+
+-- insert some data into the table and see if things work
+insert into like_man_table values (1), (2), (3), (4);
+
+select * from like_man_table order by id;

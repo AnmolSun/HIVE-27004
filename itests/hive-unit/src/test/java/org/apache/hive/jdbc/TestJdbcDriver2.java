@@ -87,8 +87,10 @@ import static org.apache.hadoop.hive.conf.SystemVariables.SET_COLUMN_NAME;
 import static org.apache.hadoop.hive.ql.exec.ExplainTask.EXPL_COLUMN_NAME;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -203,12 +205,12 @@ public class TestJdbcDriver2 {
     // Create test database and base tables once for all the test
     Class.forName(driverName);
     System.setProperty(ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL.varname, "verbose");
-    System.setProperty(ConfVars.HIVEMAPREDMODE.varname, "nonstrict");
+    System.setProperty(ConfVars.HIVE_MAPRED_MODE.varname, "nonstrict");
     System.setProperty(ConfVars.HIVE_AUTHORIZATION_MANAGER.varname,
         "org.apache.hadoop.hive.ql.security.authorization.DefaultHiveAuthorizationProvider");
     System.setProperty(ConfVars.HIVE_SERVER2_PARALLEL_OPS_IN_SESSION.varname, "false");
-    System.setProperty(ConfVars.REPLCMENABLED.varname, "true");
-    System.setProperty(ConfVars.REPLCMDIR.varname, "cmroot");
+    System.setProperty(ConfVars.REPL_CM_ENABLED.varname, "true");
+    System.setProperty(ConfVars.REPL_CM_DIR.varname, "cmroot");
     con = getConnection(defaultDbName + ";create=true");
     Statement stmt = con.createStatement();
     assertNotNull("Statement is null", stmt);
@@ -266,7 +268,6 @@ public class TestJdbcDriver2 {
 
     Statement stmt =  con.createStatement();
     stmt.execute("set " + ConfVars.SPLIT_UPDATE.varname + "=" + splitUpdateEarly);
-    stmt.execute("set " + ConfVars.MERGE_SPLIT_UPDATE.varname + "=" + splitUpdateEarly);
     stmt.execute("set " + ConfVars.HIVE_SUPPORT_CONCURRENCY.varname + "=true");
     stmt.execute("set " + ConfVars.HIVE_TXN_MANAGER.varname +
         "=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager");
@@ -2099,7 +2100,7 @@ public class TestJdbcDriver2 {
       String rline = res.getString(1);
       assertFalse(
           "set output must not contain hidden variables such as the metastore password:" + rline,
-          rline.contains(HiveConf.ConfVars.METASTOREPWD.varname)
+          rline.contains(HiveConf.ConfVars.METASTORE_PWD.varname)
               && !(rline.contains(HiveConf.ConfVars.HIVE_CONF_HIDDEN_LIST.varname)));
       // the only conf allowed to have the metastore pwd keyname is the hidden list configuration
       // value
@@ -2346,7 +2347,7 @@ public class TestJdbcDriver2 {
    */
   @Test
   public void testFetchFirstDfsCmds() throws Exception {
-    String wareHouseDir = conf.get(HiveConf.ConfVars.METASTOREWAREHOUSE.varname);
+    String wareHouseDir = conf.get(HiveConf.ConfVars.METASTORE_WAREHOUSE.varname);
     execFetchFirst("dfs -ls " + wareHouseDir, DfsProcessor.DFS_RESULT_HEADER, false);
   }
 
@@ -3238,16 +3239,16 @@ public class TestJdbcDriver2 {
 
     stmt1.executeAsync("repl status query_id_test with ('hive.query.id' = 'hiveCustomTag')");
     String queryId1 = stmt1.getQueryId();
-    assertFalse("hiveCustomTag".equals(queryId1));
-    assertFalse(queryId.equals(queryId1));
+    assertNotEquals("hiveCustomTag", queryId1);
+    assertNotEquals(queryId, queryId1);
     assertFalse(queryId1.isEmpty());
     stmt1.getUpdateCount();
 
     stmt.executeAsync("select count(*) from " + dataTypeTableName);
     queryId = stmt.getQueryId();
-    assertFalse("hiveCustomTag".equals(queryId));
+    assertNotEquals("hiveCustomTag", queryId);
     assertFalse(queryId.isEmpty());
-    assertFalse(queryId.equals(queryId1));
+    assertNotEquals(queryId, queryId1);
     stmt.getUpdateCount();
 
     stmt.execute("drop database query_id_test");
@@ -3289,9 +3290,11 @@ public class TestJdbcDriver2 {
   }
 
   // Test that opening a JDBC connection to a non-existent database throws a HiveSQLException
-  @Test(expected = HiveSQLException.class)
+  @Test
   public void testConnectInvalidDatabase() throws SQLException {
-    DriverManager.getConnection("jdbc:hive2:///databasedoesnotexist", "", "");
+    assertThrows(HiveSQLException.class, () -> {
+      DriverManager.getConnection("jdbc:hive2:///databasedoesnotexist", "", "");
+    });
   }
 
   @Test

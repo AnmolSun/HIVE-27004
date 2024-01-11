@@ -42,6 +42,7 @@ import org.apache.hadoop.hive.metastore.txn.AcidHouseKeeperService;
 import org.apache.hadoop.hive.ql.Driver;
 import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hive.common.util.ReflectionUtil;
 import org.junit.Assert;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -54,7 +55,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.FieldSetter;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -263,14 +263,14 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     //tries to get X lock on T1 and gets Waiting state
     ((DbTxnManager) txnMgr2).acquireLocks(driver.getPlan(), ctx, "Fiddler", false);
     List<ShowLocksResponseElement> locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", 2, locks.size());
+    Assert.assertEquals("Unexpected lock count", 3, locks.size());
     checkLock(LockType.SHARED_READ, LockState.ACQUIRED, "default", "T6", null, locks);
     checkLock(LockType.EXCLUSIVE, LockState.WAITING, "default", "T6", null, locks);
     txnMgr.rollbackTxn(); //release S on T6
     //attempt to X on T6 again - succeed
     ((DbLockManager)txnMgr.getLockManager()).checkLock(locks.get(1).getLockid());
     locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", 1, locks.size());
+    Assert.assertEquals("Unexpected lock count", 2, locks.size());
     checkLock(LockType.EXCLUSIVE, LockState.ACQUIRED, "default", "T6", null, locks);
     txnMgr2.rollbackTxn();
     driver.run("drop table if exists T6");
@@ -394,11 +394,11 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     driver.compileAndRespond("drop table TAB_BLOCKED", true);
     ((DbTxnManager)txnMgr2).acquireLocks(driver.getPlan(), ctx, "SAM I AM", false); //make non-blocking
     locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", 2, locks.size());
+    Assert.assertEquals("Unexpected lock count", 3, locks.size());
     checkLock(LockType.SHARED_READ, LockState.ACQUIRED, "default", "TAB_BLOCKED", null, locks);
     checkLock(LockType.EXCLUSIVE, LockState.WAITING, "default", "TAB_BLOCKED", null, locks);
-    Assert.assertEquals("BlockedByExtId doesn't match", locks.get(0).getLockid(), locks.get(1).getBlockedByExtId());
-    Assert.assertEquals("BlockedByIntId doesn't match", locks.get(0).getLockIdInternal(), locks.get(1).getBlockedByIntId());
+    Assert.assertEquals("BlockedByExtId doesn't match", locks.get(0).getLockid(), locks.get(2).getBlockedByExtId());
+    Assert.assertEquals("BlockedByIntId doesn't match", locks.get(0).getLockIdInternal(), locks.get(2).getBlockedByIntId());
   }
 
   @Test
@@ -502,7 +502,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     Assert.assertEquals(5, count);
 
     // Fail some inserts, so that we have records in TXN_COMPONENTS
-    conf.setBoolVar(HiveConf.ConfVars.HIVETESTMODEROLLBACKTXN, true);
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_ROLLBACK_TXN, true);
     driver.run("insert into temp.T10 values (9, 9)");
     driver.run("insert into temp.T11 values (10, 10)");
     driver.run("insert into temp.T12p partition (ds='today', hour='1') values (11, 11)");
@@ -510,7 +510,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     count = TestTxnDbUtil.countQueryAgent(conf, "select count(*) from \"TXN_COMPONENTS\" " +
         "where \"TC_DATABASE\"='temp' and \"TC_TABLE\" in ('t10', 't11', 't12p', 't13p')");
     Assert.assertEquals(4, count);
-    conf.setBoolVar(HiveConf.ConfVars.HIVETESTMODEROLLBACKTXN, false);
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_ROLLBACK_TXN, false);
 
     // Drop a table/partition; corresponding records in TXN_COMPONENTS and COMPLETED_TXN_COMPONENTS should disappear
     count = TestTxnDbUtil.countQueryAgent(conf, "select count(*) from \"TXN_COMPONENTS\" " +
@@ -580,7 +580,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     // Tables need at least 2 delta files to compact, and minor compaction was just run, so insert
     driver.run("insert into temp.T11 values (14, 14)");
     driver.run("insert into temp.T12p partition (ds='tomorrow', hour='2') values (15, 15)");
-    conf.setBoolVar(HiveConf.ConfVars.HIVETESTMODEFAILCOMPACTION, true);
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_FAIL_COMPACTION, true);
     driver.run("alter table temp.T11 compact 'major'");
     count = TestTxnDbUtil.countQueryAgent(conf, "select count(*) from \"COMPACTION_QUEUE\" " +
         "where \"CQ_DATABASE\"='temp' and \"CQ_TABLE\"='t11' and \"CQ_STATE\"='i' and \"CQ_TYPE\"='a'");
@@ -606,7 +606,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     count = TestTxnDbUtil.countQueryAgent(conf, "select count(*) from \"COMPLETED_COMPACTIONS\" " +
         "where \"CC_DATABASE\"='temp' and \"CC_TABLE\"='t12p' and \"CC_STATE\"='f' and \"CC_TYPE\"='a'");
     Assert.assertEquals(1, count);
-    conf.setBoolVar(HiveConf.ConfVars.HIVETESTMODEFAILCOMPACTION, false);
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_FAIL_COMPACTION, false);
 
     // Put 2 records into COMPACTION_QUEUE and do nothing
     driver.run("alter table temp.T11 compact 'major'");
@@ -3130,7 +3130,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
     //tries to get X lock on T6 and gets Waiting state
     ((DbTxnManager) txnMgr2).acquireLocks(driver.getPlan(), ctx, "Fiddler", false);
     List<ShowLocksResponseElement> locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", 2, locks.size());
+    Assert.assertEquals("Unexpected lock count", 3, locks.size());
     checkLock(LockType.SHARED_READ, LockState.ACQUIRED, "default", "T6", null, locks);
     long extLockId = checkLock(LockType.EXCLUSIVE, LockState.WAITING, "default", "T6", null, locks).getLockid();
 
@@ -3151,7 +3151,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
         ex.getMessage());
     }
     locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", (zeroWaitRead ? 2 : 3), locks.size());
+    Assert.assertEquals("Unexpected lock count", (zeroWaitRead ? 3 : 4), locks.size());
     checkLock(LockType.SHARED_READ, LockState.ACQUIRED, "default", "T6", null, locks);
     if (!zeroWaitRead) {
       checkLock(LockType.SHARED_READ, LockState.WAITING, "default", "T6", null, locks);
@@ -3495,6 +3495,8 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
   @Test
   public void testRemoveDuplicateCompletedTxnComponents() throws Exception {
     dropTable(new String[] {"tab_acid"});
+    MetastoreConf.setBoolVar(conf, MetastoreConf.ConfVars.COMPACTOR_INITIATOR_ON, true);
+    MetastoreConf.setBoolVar(conf, MetastoreConf.ConfVars.COMPACTOR_CLEANER_ON, true);
 
     driver.run("create table if not exists tab_acid (a int) partitioned by (p string) " +
       "stored as orc TBLPROPERTIES ('transactional'='true')");
@@ -3658,7 +3660,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
@@ -3753,13 +3755,13 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
-      
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
     locks = getLocks();
-    Assert.assertEquals("Unexpected lock count", 1, locks.size());
+    Assert.assertEquals("Unexpected lock count", 2, locks.size());
     
     checkLock(blocking ? LockType.EXCLUSIVE : LockType.EXCL_WRITE, 
       LockState.ACQUIRED, "default", "tab_acid", null, locks);
@@ -3887,7 +3889,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
@@ -4029,7 +4031,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
@@ -4125,7 +4127,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
@@ -4393,7 +4395,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();
@@ -4490,7 +4492,7 @@ public class TestDbTxnManager2 extends DbTxnManagerEndToEndTestBase{
       driver.getFetchTask().fetch(res);
       swapTxnManager(txnMgr2);
 
-      FieldSetter.setField(txnMgr2, txnMgr2.getClass().getDeclaredField("numStatements"), 0);
+      ReflectionUtil.setField(txnMgr2, "numStatements", 0);
       txnMgr2.getMS().unlock(checkLock.getLockid());
     }
     driver2.lockAndRespond();

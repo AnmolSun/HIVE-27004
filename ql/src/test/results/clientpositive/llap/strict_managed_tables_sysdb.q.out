@@ -308,6 +308,10 @@ sys	partitions			hive_test_user	USER	DELETE	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	INSERT	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	SELECT	true	-1	hive_test_user
 sys	partitions			hive_test_user	USER	UPDATE	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	DELETE	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	INSERT	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	SELECT	true	-1	hive_test_user
+sys	replication_failover_failback_metrics			hive_test_user	USER	UPDATE	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	DELETE	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	INSERT	true	-1	hive_test_user
 sys	replication_metrics			hive_test_user	USER	SELECT	true	-1	hive_test_user
@@ -457,24 +461,34 @@ smt_sysdb_src_skew	EXTERNAL_TABLE
 smt_sysdb_view	VIRTUAL_VIEW
 PREHOOK: query: drop table smt_sysdb_src_buck
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:sys
 POSTHOOK: query: drop table smt_sysdb_src_buck
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:sys
 PREHOOK: query: drop table smt_sysdb_src_skew
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:sys
 POSTHOOK: query: drop table smt_sysdb_src_skew
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:sys
 PREHOOK: query: drop table smt_sysdb_scr_txn
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:sys
 POSTHOOK: query: drop table smt_sysdb_scr_txn
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:sys
 PREHOOK: query: drop table smt_sysdb_src_tmp
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:sys
 POSTHOOK: query: drop table smt_sysdb_src_tmp
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:sys
 PREHOOK: query: drop table smt_sysdb_moretypes
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:sys
 POSTHOOK: query: drop table smt_sysdb_moretypes
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:sys
 PREHOOK: query: DROP DATABASE IF EXISTS SYS CASCADE
 PREHOOK: type: DROPDATABASE
 PREHOOK: Input: database:sys
@@ -506,6 +520,7 @@ PREHOOK: Output: sys@partition_keys
 PREHOOK: Output: sys@partition_params
 PREHOOK: Output: sys@partition_stats_view
 PREHOOK: Output: sys@partitions
+PREHOOK: Output: sys@replication_failover_failback_metrics
 PREHOOK: Output: sys@replication_metrics
 PREHOOK: Output: sys@replication_metrics_orig
 PREHOOK: Output: sys@role_map
@@ -569,6 +584,7 @@ POSTHOOK: Output: sys@partition_keys
 POSTHOOK: Output: sys@partition_params
 POSTHOOK: Output: sys@partition_stats_view
 POSTHOOK: Output: sys@partitions
+POSTHOOK: Output: sys@replication_failover_failback_metrics
 POSTHOOK: Output: sys@replication_metrics
 POSTHOOK: Output: sys@replication_metrics_orig
 POSTHOOK: Output: sys@role_map

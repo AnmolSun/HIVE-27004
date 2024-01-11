@@ -54,7 +54,7 @@ public class TestHplSqlViaBeeLine {
     hiveConf.setVar(HiveConf.ConfVars.HIVE_LOCK_MANAGER,
             "org.apache.hadoop.hive.ql.lockmgr.EmbeddedLockManager");
     hiveConf.setIntVar(HiveConf.ConfVars.HIVE_SERVER2_THRIFT_RESULTSET_DEFAULT_FETCH_SIZE, 10);
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVEOPTIMIZEMETADATAQUERIES, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPTIMIZE_METADATA_QUERIES, false);
     hiveConf.set(HiveConf.ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL.varname, "verbose");
     miniHS2 = new MiniHS2(hiveConf, MiniHS2.MiniClusterType.TEZ);
     Map<String, String> confOverlay = new HashMap<>();
@@ -378,6 +378,24 @@ public class TestHplSqlViaBeeLine {
             "END;\n" +
             "SELECT hello(col_d) FROM result;\n";
     testScriptFile(SCRIPT_TEXT, args(), "Hello 12345.67!.*Hello 98765.43!");
+  }
+
+  @Test
+  public void testBuiltInUdf() throws Throwable {
+    String SCRIPT_TEXT = "SELECT abs(-2);\n";
+    testScriptFile(SCRIPT_TEXT, args(), "2");
+  }
+
+  @Test
+  public void testNestedUdfAndProcedure() throws Throwable {
+    String SCRIPT_TEXT =
+        "CREATE FUNCTION dbl(d int)\n" +
+        "   RETURNS int\n" +
+        "BEGIN\n" +
+        "   RETURN d * 2;\n" +
+        "END;\n" +
+        "SELECT dbl(abs(-2)), abs(dbl(-2)), dbl(dbl(20));\n";
+    testScriptFile(SCRIPT_TEXT, args(), "4.*4\\.0.*80");
   }
 
   @Test

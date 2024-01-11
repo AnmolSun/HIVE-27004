@@ -206,7 +206,7 @@ public class GroupByOperator extends Operator<GroupByDesc> implements IConfigure
     numRowsHashTbl = 0;
 
     heartbeatInterval = HiveConf.getIntVar(hconf,
-        HiveConf.ConfVars.HIVESENDHEARTBEAT);
+        HiveConf.ConfVars.HIVE_SEND_HEARTBEAT);
     countAfterReport = 0;
     ObjectInspector rowInspector = inputObjInspectors[0];
 
@@ -367,7 +367,7 @@ public class GroupByOperator extends Operator<GroupByDesc> implements IConfigure
       keyPositionsSize = new ArrayList<Integer>();
       aggrPositions = new List[aggregations.length];
       groupbyMapAggrInterval = HiveConf.getIntVar(hconf,
-          HiveConf.ConfVars.HIVEGROUPBYMAPINTERVAL);
+          HiveConf.ConfVars.HIVE_GROUPBY_MAP_INTERVAL);
 
       // compare every groupbyMapAggrInterval rows
       numRowsCompareHashAggr = groupbyMapAggrInterval;
@@ -1129,7 +1129,7 @@ public class GroupByOperator extends Operator<GroupByDesc> implements IConfigure
     int groupingSetPosition = desc.getGroupingSetPosition();
     List<Long> listGroupingSets = desc.getListGroupingSets();
     // groupingSets are known at map/reducer side; but have to do real processing
-    // hence grouppingSetsPresent is true only at map side
+    // hence groupingSetsPresent is true only at map side
     if (groupingSetPosition >= 0 && listGroupingSets != null) {
       Long emptyGrouping = (1L << groupingSetPosition) - 1;
       if (listGroupingSets.contains(emptyGrouping)) {

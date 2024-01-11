@@ -578,7 +578,17 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
         unionPath = null;
       } else if (conf.isMmTable() || isUnionDp) {
         // MM tables need custom handling for union suffix; DP tables use parent too.
-        specPath = conf.getParentDir();
+        // For !isDirectInsert and !conf.isMmTable() cases, the output will be like:
+        // w1: <table-dir>/<staging-dir>/_tmp.-ext-10000/<partition-dir>/HIVE_UNION_SUBDIR_1/<task_id>
+        // w2: <table-dir>/<staging-dir>/_tmp.-ext-10000/<partition-dir>/HIVE_UNION_SUBDIR_2/<task_id>
+        // When the BaseWork w2 in a TezTask closes first, it may rename the entire directory:
+        // <table-dir>/<staging-dir>/_tmp.-ext-10000 to <table-dir>/<staging-dir>/_tmp.-ext-10000.moved,
+        // make the specPath to conf.getDirName() can give w1 a chance to deal with his output under the
+        // directory HIVE_UNION_SUBDIR_1, the output directory after will be
+        // <table-dir>/<staging-dir>/-ext-10000/_tmp.HIVE_UNION_SUBDIR_1/<partition-dir>/HIVE_UNION_SUBDIR_1.
+        // When the job finishes, it will move the output to
+        // <table-dir>/<staging-dir>/-ext-10000/<partition-dir>/HIVE_UNION_SUBDIR_1 as it does before.
+        specPath = conf.isMmTable() ? conf.getParentDir() : conf.getDirName();
         unionPath = conf.getDirName().getName();
       } else {
         // For now, keep the old logic for non-MM non-DP union case. Should probably be unified.
@@ -645,7 +655,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       outputClass = serializer.getSerializedClass();
       destTablePath = conf.getDestPath();
       isInsertOverwrite = conf.getInsertOverwrite();
-      counterGroup = HiveConf.getVar(hconf, HiveConf.ConfVars.HIVECOUNTERGROUP);
+      counterGroup = HiveConf.getVar(hconf, HiveConf.ConfVars.HIVE_COUNTER_GROUP);
       LOG.info("Using serializer : " + serializer + " and formatter : " + hiveOutputFormat
           + (isCompressed ? " with compression" : ""));
 
@@ -1136,8 +1146,8 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       }
 
       rowOutWriters = fpaths.outWriters;
-      // check if all record writers implement statistics. if atleast one RW
-      // doesn't implement stats interface we will fallback to conventional way
+      // check if all record writers implement statistics. if at least one RW
+      // doesn't implement stats interface we will fall back to conventional way
       // of gathering stats
       isCollectRWStats = areAllTrue(statsFromRecordWriter);
       if (conf.isGatherStats() && !isCollectRWStats) {
@@ -1585,7 +1595,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
         DynamicPartitionCtx dpCtx = conf.getDynPartCtx();
         ListBucketingCtx lbCtx = conf.getLbCtx();
         if (conf.isLinkedFileSink() && (dpCtx != null || conf.isMmTable())) {
-          specPath = conf.getParentDir();
+          specPath = conf.isMmTable() ? conf.getParentDir() : conf.getDirName();
           unionSuffix = conf.getDirName().getName();
         }
         if (conf.isLinkedFileSink() && conf.isDirectInsert()) {
@@ -1637,7 +1647,7 @@ public class FileSinkOperator extends TerminalOperator<FileSinkDesc> implements
       }
     }
     if (conf.getTableInfo().isNonNative()) {
-      //check the ouput specs only if it is a storage handler (native tables's outputformats does
+      //check the output specs only if it is a storage handler (native tables's outputformats does
       //not set the job's output properties correctly)
       try {
         hiveOutputFormat.checkOutputSpecs(ignored, job);

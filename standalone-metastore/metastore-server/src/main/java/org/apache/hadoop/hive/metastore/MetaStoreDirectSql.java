@@ -32,11 +32,10 @@ import static org.apache.hadoop.hive.metastore.ColumnType.TINYINT_TYPE_NAME;
 import static org.apache.hadoop.hive.metastore.ColumnType.VARCHAR_TYPE_NAME;
 
 import java.sql.Connection;
+import java.sql.Date;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
-import java.text.ParseException;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -69,6 +68,8 @@ import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.DatabaseType;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.Function;
+import org.apache.hadoop.hive.metastore.api.FunctionType;
 import org.apache.hadoop.hive.metastore.api.GetPartitionsFilterSpec;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.HiveObjectRef;
@@ -88,6 +89,7 @@ import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.SkewedInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.client.builder.GetPartitionsArgs;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf.ConfVars;
 import org.apache.hadoop.hive.metastore.model.MConstraint;
@@ -95,9 +97,11 @@ import org.apache.hadoop.hive.metastore.model.MCreationMetadata;
 import org.apache.hadoop.hive.metastore.model.MDatabase;
 import org.apache.hadoop.hive.metastore.model.MNotificationLog;
 import org.apache.hadoop.hive.metastore.model.MNotificationNextId;
+import org.apache.hadoop.hive.metastore.model.MPartition;
 import org.apache.hadoop.hive.metastore.model.MPartitionColumnPrivilege;
 import org.apache.hadoop.hive.metastore.model.MPartitionColumnStatistics;
 import org.apache.hadoop.hive.metastore.model.MPartitionPrivilege;
+import org.apache.hadoop.hive.metastore.model.MTable;
 import org.apache.hadoop.hive.metastore.model.MTableColumnStatistics;
 import org.apache.hadoop.hive.metastore.model.MWMResourcePlan;
 import org.apache.hadoop.hive.metastore.parser.ExpressionTree;
@@ -107,6 +111,7 @@ import org.apache.hadoop.hive.metastore.parser.ExpressionTree.LogicalOperator;
 import org.apache.hadoop.hive.metastore.parser.ExpressionTree.Operator;
 import org.apache.hadoop.hive.metastore.parser.ExpressionTree.TreeNode;
 import org.apache.hadoop.hive.metastore.parser.ExpressionTree.TreeVisitor;
+import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreServerUtils;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreServerUtils.ColStatsObjWithSourceInfo;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
@@ -148,6 +153,7 @@ class MetaStoreDirectSql {
   private final int batchSize;
   private final boolean convertMapNullsToEmptyStrings;
   private final String defaultPartName;
+  private final boolean isTxnStatsEnabled;
 
   /**
    * Whether direct SQL can be used with the current datastore backing {@link #pm}.
@@ -156,7 +162,8 @@ class MetaStoreDirectSql {
   private final boolean isAggregateStatsCacheEnabled;
   private final ImmutableMap<String, String> fieldnameToTableName;
   private AggregateStatsCache aggrStatsCache;
-  private DirectSqlUpdateStat updateStat;
+  private DirectSqlUpdatePart directSqlUpdatePart;
+  private DirectSqlInsertPart directSqlInsertPart;
 
   /**
    * This method returns a comma separated string consisting of String values of a given list.
@@ -181,7 +188,7 @@ class MetaStoreDirectSql {
       SDS, SERDES, SKEWED_STRING_LIST_VALUES, SKEWED_VALUES, BUCKETING_COLS, SKEWED_COL_NAMES,
       SKEWED_COL_VALUE_LOC_MAP, COLUMNS_V2, PARTITION_KEYS, SERDE_PARAMS, PART_COL_STATS, KEY_CONSTRAINTS,
       TAB_COL_STATS, PARTITION_KEY_VALS, PART_PRIVS, PART_COL_PRIVS, SKEWED_STRING_LIST, CDS,
-      TBL_COL_PRIVS;
+      TBL_COL_PRIVS, FUNCS, FUNC_RU;
 
   public MetaStoreDirectSql(PersistenceManager pm, Configuration conf, String schema) {
     this.pm = pm;
@@ -193,11 +200,13 @@ class MetaStoreDirectSql {
 
     this.dbType = dbType;
     int batchSize = MetastoreConf.getIntVar(conf, ConfVars.DIRECT_SQL_PARTITION_BATCH_SIZE);
+    this.directSqlInsertPart = new DirectSqlInsertPart(pm, dbType, batchSize);
     if (batchSize == DETECT_BATCHING) {
       batchSize = dbType.needsInBatching() ? 1000 : NO_BATCHING;
     }
     this.batchSize = batchSize;
-    this.updateStat = new DirectSqlUpdateStat(pm, conf, dbType, batchSize);
+    this.isTxnStatsEnabled = MetastoreConf.getBoolVar(conf, ConfVars.HIVE_TXN_STATS_ENABLED);
+    this.directSqlUpdatePart = new DirectSqlUpdatePart(pm, conf, dbType, batchSize);
     ImmutableMap.Builder<String, String> fieldNameToTableNameBuilder =
         new ImmutableMap.Builder<>();
 
@@ -383,7 +392,7 @@ class MetaStoreDirectSql {
     String queryTextDbSelector= "select "
         + "\"DB_ID\", \"NAME\", \"DB_LOCATION_URI\", \"DESC\", "
         + "\"OWNER_NAME\", \"OWNER_TYPE\", \"CTLG_NAME\" , \"CREATE_TIME\", \"DB_MANAGED_LOCATION_URI\", "
-        + "\"TYPE\", \"DATACONNECTOR_NAME\", \"REMOTE_DBNAME\""
+        + "\"TYPE\", \"DATACONNECTOR_NAME\", \"REMOTE_DBNAME\" "
         + "FROM "+ DBS
         + " where \"NAME\" = ? and \"CTLG_NAME\" = ? ";
     String queryTextDbParams = "select \"PARAM_KEY\", \"PARAM_VALUE\" "
@@ -518,6 +527,81 @@ class MetaStoreDirectSql {
   }
 
   /**
+   * Add partitions in batch using direct SQL
+   * @param parts list of partitions
+   * @param partPrivilegesList list of partition privileges
+   * @param partColPrivilegesList list of partition column privileges
+   * @throws MetaException
+   */
+  public void addPartitions(List<MPartition> parts, List<List<MPartitionPrivilege>> partPrivilegesList,
+      List<List<MPartitionColumnPrivilege>> partColPrivilegesList) throws MetaException {
+    directSqlInsertPart.addPartitions(parts, partPrivilegesList, partColPrivilegesList);
+  }
+
+  /**
+   * Alter partitions in batch using direct SQL
+   * @param table the target table
+   * @param partNames list of partition names
+   * @param newParts list of new partitions
+   * @param queryWriteIdList valid write id list
+   * @return
+   * @throws MetaException
+   */
+  public List<Partition> alterPartitions(MTable table, List<String> partNames,
+                                         List<Partition> newParts, String queryWriteIdList) throws MetaException {
+    List<Object[]> rows = Batchable.runBatched(batchSize, partNames, new Batchable<String, Object[]>() {
+      @Override
+      public List<Object[]> run(List<String> input) throws Exception {
+        String filter = "" + PARTITIONS + ".\"PART_NAME\" in (" + makeParams(input.size()) + ")";
+        List<String> columns = Arrays.asList("\"PART_ID\"", "\"PART_NAME\"", "\"SD_ID\"", "\"WRITE_ID\"");
+        return getPartitionFieldsViaSqlFilter(table.getDatabase().getCatalogName(), table.getDatabase().getName(),
+                table.getTableName(), columns, filter, input, Collections.emptyList(), null);
+      }
+    });
+    Map<List<String>, Long> partValuesToId = new HashMap<>();
+    Map<Long, Long> partIdToSdId = new HashMap<>();
+    Map<Long, Long> partIdToWriteId = new HashMap<>();
+    for (Object[] row : rows) {
+      Long partId = MetastoreDirectSqlUtils.extractSqlLong(row[0]);
+      Long sdId = MetastoreDirectSqlUtils.extractSqlLong(row[2]);
+      Long writeId = MetastoreDirectSqlUtils.extractSqlLong(row[3]);
+      partIdToSdId.put(partId, sdId);
+      partIdToWriteId.put(partId, writeId);
+      List<String> partValues = Warehouse.getPartValuesFromPartName((String) row[1]);
+      partValuesToId.put(partValues, partId);
+    }
+
+    boolean isTxn = TxnUtils.isTransactionalTable(table.getParameters());
+    for (Partition newPart : newParts) {
+      Long partId = partValuesToId.get(newPart.getValues());
+      boolean useOldWriteId = true;
+      // If transactional, add/update the MUPdaterTransaction
+      // for the current updater query.
+      if (isTxn) {
+        if (!isTxnStatsEnabled) {
+          StatsSetupConst.setBasicStatsState(newPart.getParameters(), StatsSetupConst.FALSE);
+        } else if (queryWriteIdList != null && newPart.getWriteId() > 0) {
+          // Check concurrent INSERT case and set false to the flag.
+          if (!ObjectStore.isCurrentStatsValidForTheQuery(newPart.getParameters(),
+              partIdToWriteId.get(partId), queryWriteIdList, true)) {
+            StatsSetupConst.setBasicStatsState(newPart.getParameters(), StatsSetupConst.FALSE);
+            LOG.info("Removed COLUMN_STATS_ACCURATE from the parameters of the partition " +
+                Warehouse.getQualifiedName(newPart) + " will be made persistent.");
+          }
+          useOldWriteId = false;
+        }
+      }
+
+      if (useOldWriteId) {
+        newPart.setWriteId(partIdToWriteId.get(partId));
+      }
+    }
+
+    directSqlUpdatePart.alterPartitions(partValuesToId, partIdToSdId, newParts);
+    return newParts;
+  }
+
+  /**
    * Get partition names by using direct SQL queries.
    * @param filter filter to use with direct sql
    * @param partitionKeys partition columns
@@ -644,12 +728,13 @@ class MetaStoreDirectSql {
    * @param catName Metastore catalog name.
    * @param dbName Metastore db name.
    * @param tblName Metastore table name.
-   * @param partNames Partition names to get.
+   * @param args additional arguments for getting partitions
    * @return List of partitions.
    */
-  public List<Partition> getPartitionsViaSqlFilter(final String catName, final String dbName,
-                                                   final String tblName, List<String> partNames)
+  public List<Partition> getPartitionsViaPartNames(final String catName, final String dbName,
+      final String tblName, GetPartitionsArgs args)
       throws MetaException {
+    List<String> partNames = args.getPartNames();
     if (partNames.isEmpty()) {
       return Collections.emptyList();
     }
@@ -662,7 +747,8 @@ class MetaStoreDirectSql {
         if (partitionIds.isEmpty()) {
           return Collections.emptyList(); // no partitions, bail early.
         }
-        return getPartitionsFromPartitionIds(catName, dbName, tblName, null, partitionIds, Collections.emptyList());
+        return getPartitionsFromPartitionIds(catName, dbName, tblName, null,
+                partitionIds, Collections.emptyList(), false, args);
       }
     });
   }
@@ -670,15 +756,16 @@ class MetaStoreDirectSql {
   /**
    * Gets partitions by using direct SQL queries.
    * @param filter The filter.
-   * @param max The maximum number of partitions to return.
    * @param isAcidTable True if the table is ACID
+   * @param args additional arguments for getting partitions
    * @return List of partitions.
    */
   public List<Partition> getPartitionsViaSqlFilter(String catName, String dbName, String tableName,
-      SqlFilterForPushdown filter, Integer max, boolean isAcidTable) throws MetaException {
+      SqlFilterForPushdown filter, boolean isAcidTable,
+      GetPartitionsArgs args) throws MetaException {
     List<Long> partitionIds = getPartitionIdsViaSqlFilter(catName,
         dbName, tableName, filter.filter, filter.params,
-        filter.joins, max);
+        filter.joins, args.getMax());
     if (partitionIds.isEmpty()) {
       return Collections.emptyList(); // no partitions, bail early.
     }
@@ -686,7 +773,7 @@ class MetaStoreDirectSql {
       @Override
       public List<Partition> run(List<Long> input) throws MetaException {
         return getPartitionsFromPartitionIds(catName, dbName,
-            tableName, null, input, Collections.emptyList(), isAcidTable);
+            tableName, null, input, Collections.emptyList(), isAcidTable, args);
       }
     });
   }
@@ -825,13 +912,13 @@ class MetaStoreDirectSql {
    * @param catName Metastore catalog name.
    * @param dbName Metastore db name.
    * @param tblName Metastore table name.
-   * @param max The maximum number of partitions to return.
+   * @param args additional arguments for getting partitions
    * @return List of partitions.
    */
   public List<Partition> getPartitions(String catName,
-      String dbName, String tblName, Integer max) throws MetaException {
+      String dbName, String tblName, GetPartitionsArgs args) throws MetaException {
     List<Long> partitionIds = getPartitionIdsViaSqlFilter(catName, dbName,
-        tblName, null, Collections.<String>emptyList(), Collections.<String>emptyList(), max);
+        tblName, null, Collections.<String>emptyList(), Collections.<String>emptyList(), args.getMax());
     if (partitionIds.isEmpty()) {
       return Collections.emptyList(); // no partitions, bail early.
     }
@@ -840,7 +927,7 @@ class MetaStoreDirectSql {
     List<Partition> result = Batchable.runBatched(batchSize, partitionIds, new Batchable<Long, Partition>() {
       @Override
       public List<Partition> run(List<Long> input) throws MetaException {
-        return getPartitionsFromPartitionIds(catName, dbName, tblName, null, input, Collections.emptyList());
+        return getPartitionsFromPartitionIds(catName, dbName, tblName, null, input, Collections.emptyList(), false, args);
       }
     });
     return result;
@@ -880,23 +967,46 @@ class MetaStoreDirectSql {
       String catName, String dbName, String tblName, String sqlFilter,
       List<? extends Object> paramsForFilter, List<String> joinsForFilter, Integer max)
       throws MetaException {
+    return getPartitionFieldsViaSqlFilter(catName, dbName, tblName,
+        Arrays.asList("\"PART_ID\""), sqlFilter, paramsForFilter, joinsForFilter, max);
+  }
+
+  /**
+   * Get partition fields for the query using direct SQL queries, to avoid bazillion
+   * queries created by DN retrieving stuff for each object individually.
+   * @param catName MetaStore catalog name
+   * @param dbName MetaStore db name
+   * @param tblName MetaStore table name
+   * @param partColumns part fields want to get
+   * @param sqlFilter SQL filter to use. Better be SQL92-compliant.
+   * @param paramsForFilter params for ?-s in SQL filter text. Params must be in order.
+   * @param joinsForFilter if the filter needs additional join statement, they must be in
+   *                       this list. Better be SQL92-compliant.
+   * @param max The maximum number of partitions to return.
+   * @return List of partition objects.
+   */
+  public <T> List<T> getPartitionFieldsViaSqlFilter(
+      String catName, String dbName, String tblName, List<String> partColumns, String sqlFilter,
+      List<? extends Object> paramsForFilter, List<String> joinsForFilter, Integer max)
+      throws MetaException {
     boolean doTrace = LOG.isDebugEnabled();
     final String dbNameLcase = dbName.toLowerCase();
     final String tblNameLcase = tblName.toLowerCase();
     final String catNameLcase = normalizeSpace(catName).toLowerCase();
 
     // We have to be mindful of order during filtering if we are not returning all partitions.
-    String orderForFilter = (max != null) ? " order by \"PART_NAME\" asc" : "";
+    String orderForFilter = (max != null) ? " order by " + MetastoreConf.getVar(conf, ConfVars.PARTITION_ORDER_EXPR) : "";
+    String columns = partColumns.stream().map(col -> PARTITIONS + "." + col).collect(Collectors.joining(","));
 
     String queryText =
-        "select " + PARTITIONS + ".\"PART_ID\" from " + PARTITIONS + ""
-      + "  inner join " + TBLS + " on " + PARTITIONS + ".\"TBL_ID\" = " + TBLS + ".\"TBL_ID\" "
-      + "    and " + TBLS + ".\"TBL_NAME\" = ? "
-      + "  inner join " + DBS + " on " + TBLS + ".\"DB_ID\" = " + DBS + ".\"DB_ID\" "
-      + "     and " + DBS + ".\"NAME\" = ? "
-      + join(joinsForFilter, ' ')
-      + " where " + DBS + ".\"CTLG_NAME\" = ? "
-      + (StringUtils.isBlank(sqlFilter) ? "" : (" and " + sqlFilter)) + orderForFilter;
+        "select " + columns + " from " + PARTITIONS + ""
+            + "  inner join " + TBLS + " on " + PARTITIONS + ".\"TBL_ID\" = " + TBLS + ".\"TBL_ID\" "
+            + "    and " + TBLS + ".\"TBL_NAME\" = ? "
+            + "  inner join " + DBS + " on " + TBLS + ".\"DB_ID\" = " + DBS + ".\"DB_ID\" "
+            + "     and " + DBS + ".\"NAME\" = ? "
+            + join(joinsForFilter, ' ')
+            + " where " + DBS + ".\"CTLG_NAME\" = ? "
+            + (StringUtils.isBlank(sqlFilter) ? "" : (" and " + sqlFilter)) + orderForFilter;
     Object[] params = new Object[paramsForFilter.size() + 3];
     params[0] = tblNameLcase;
     params[1] = dbNameLcase;
@@ -907,33 +1017,19 @@ class MetaStoreDirectSql {
 
     long start = doTrace ? System.nanoTime() : 0;
     try (QueryWrapper query = new QueryWrapper(pm.newQuery("javax.jdo.query.SQL", queryText))) {
-      List<Object> sqlResult = executeWithArray(query.getInnerQuery(), params, queryText,
+      List<T> sqlResult = executeWithArray(query.getInnerQuery(), params, queryText,
           ((max == null) ? -1 : max.intValue()));
       long queryTime = doTrace ? System.nanoTime() : 0;
       MetastoreDirectSqlUtils.timingTrace(doTrace, queryText, start, queryTime);
-      final List<Long> result;
-      if (sqlResult.isEmpty()) {
-        result = Collections.emptyList(); // no partitions, bail early.
-      } else {
-        result = new ArrayList<>(sqlResult.size());
-        for (Object fields : sqlResult) {
-          result.add(MetastoreDirectSqlUtils.extractSqlLong(fields));
-        }
-      }
+      List<T> result = new ArrayList<>(sqlResult);
       return result;
     }
   }
 
   /** Should be called with the list short enough to not trip up Oracle/etc. */
   private List<Partition> getPartitionsFromPartitionIds(String catName, String dbName, String tblName,
-      Boolean isView, List<Long> partIdList, List<String> projectionFields) throws MetaException {
-    return getPartitionsFromPartitionIds(catName, dbName, tblName, isView, partIdList, projectionFields, false);
-  }
-
-  /** Should be called with the list short enough to not trip up Oracle/etc. */
-  private List<Partition> getPartitionsFromPartitionIds(String catName, String dbName, String tblName,
       Boolean isView, List<Long> partIdList, List<String> projectionFields,
-      boolean isAcidTable) throws MetaException {
+      boolean isAcidTable, GetPartitionsArgs args) throws MetaException {
 
     boolean doTrace = LOG.isDebugEnabled();
 
@@ -1069,7 +1165,8 @@ class MetaStoreDirectSql {
     }
     // Now get all the one-to-many things. Start with partitions.
     MetastoreDirectSqlUtils
-        .setPartitionParameters(PARTITION_PARAMS, convertMapNullsToEmptyStrings, pm, partIds, partitions);
+        .setPartitionParametersWithFilter(PARTITION_PARAMS, convertMapNullsToEmptyStrings, pm,
+            partIds, partitions, args.getIncludeParamKeyPattern(), args.getExcludeParamKeyPattern());
 
     MetastoreDirectSqlUtils.setPartitionValues(PARTITION_KEY_VALS, pm, partIds, partitions);
 
@@ -1112,7 +1209,7 @@ class MetaStoreDirectSql {
     } // if (hasSkewedColumns)
 
     // Get FieldSchema stuff if any.
-    if (!colss.isEmpty()) {
+    if (!colss.isEmpty() && !args.isSkipColumnSchemaForPartition()) {
       // We are skipping the CDS table here, as it seems to be totally useless.
       MetastoreDirectSqlUtils.setSDCols(COLUMNS_V2, pm, colss, colIds);
     }
@@ -1312,7 +1409,7 @@ class MetaStoreDirectSql {
         return;
       }
 
-      String colTypeStr = partitionKeys.get(partColIndex).getType();
+      String colTypeStr = ColumnType.getTypeName(partitionKeys.get(partColIndex).getType());
       FilterType colType = FilterType.fromType(colTypeStr);
       if (colType == FilterType.Invalid) {
         filterBuffer.setError("Filter pushdown not supported for type " + colTypeStr);
@@ -1330,25 +1427,24 @@ class MetaStoreDirectSql {
       if (colType == FilterType.Date && valType == FilterType.String) {
         // Filter.g cannot parse a quoted date; try to parse date here too.
         try {
-          nodeValue = MetaStoreUtils.PARTITION_DATE_FORMAT.get().parse((String)nodeValue);
+          nodeValue = MetaStoreUtils.convertStringToDate((String)nodeValue);
           valType = FilterType.Date;
-        } catch (ParseException pe) { // do nothing, handled below - types will mismatch
+        } catch (Exception pe) { // do nothing, handled below - types will mismatch
         }
       }
 
       if (colType == FilterType.Timestamp && valType == FilterType.String) {
-        nodeValue = Timestamp.valueOf(LocalDateTime.from(
-            MetaStoreUtils.PARTITION_TIMESTAMP_FORMAT.get().parse((String)nodeValue)));
+        nodeValue = MetaStoreUtils.convertStringToTimestamp((String)nodeValue);
         valType = FilterType.Timestamp;
       }
 
       // We format it so we are sure we are getting the right value
       if (valType == FilterType.Date) {
         // Format
-        nodeValue = MetaStoreUtils.PARTITION_DATE_FORMAT.get().format(nodeValue);
+        nodeValue = MetaStoreUtils.convertDateToString((Date)nodeValue);
       } else if (valType == FilterType.Timestamp) {
         //format
-        nodeValue = MetaStoreUtils.PARTITION_TIMESTAMP_FORMAT.get().format(((Timestamp) nodeValue).toLocalDateTime());
+        nodeValue = MetaStoreUtils.convertTimestampToString((Timestamp) nodeValue);
       }
 
       boolean isDefaultPartition = (valType == FilterType.String) && defaultPartName.equals(nodeValue);
@@ -3041,7 +3137,110 @@ class MetaStoreDirectSql {
       ColumnStatistics colStats = (ColumnStatistics) entry.getValue();
       numStats += colStats.getStatsObjSize();
     }
-    long csId = updateStat.getNextCSIdForMPartitionColumnStatistics(numStats);
-    return updateStat.updatePartitionColumnStatistics(partColStatsMap, tbl, csId, validWriteIds, writeId, listeners);
+    long csId = directSqlUpdatePart.getNextCSIdForMPartitionColumnStatistics(numStats);
+    return directSqlUpdatePart.updatePartitionColumnStatistics(partColStatsMap, tbl, csId, validWriteIds, writeId, listeners);
+  }
+
+  public List<Function> getFunctions(String catName) throws MetaException {
+    List<Long> funcIds = getFunctionIds(catName);
+    if (funcIds.isEmpty()) {
+      return Collections.emptyList(); // no functions, bail early.
+    }
+    // Get full objects. For Oracle/etc. do it in batches.
+    return Batchable.runBatched(batchSize, funcIds, new Batchable<Long, Function>() {
+      @Override
+      public List<Function> run(List<Long> input) throws MetaException {
+        return getFunctionsFromFunctionIds(input, catName);
+      }
+    });
+  }
+
+  private List<Function> getFunctionsFromFunctionIds(List<Long> funcIdList, String catName) throws MetaException {
+    String funcIds = getIdListForIn(funcIdList);
+    final int funcIdIndex = 0;
+    final int funcNameIndex = 1;
+    final int dbNameIndex = 2;
+    final int funcClassNameIndex = 3;
+    final int funcOwnerNameIndex = 4;
+    final int funcOwnerTypeIndex = 5;
+    final int funcCreateTimeIndex = 6;
+    final int funcTypeIndex = 7;
+
+    String queryText = "SELECT " +
+        FUNCS + ".\"FUNC_ID\", " +
+        FUNCS + ".\"FUNC_NAME\", " +
+        DBS + ".\"NAME\", " +
+        FUNCS + ".\"CLASS_NAME\", " +
+        FUNCS + ".\"OWNER_NAME\", " +
+        FUNCS + ".\"OWNER_TYPE\", " +
+        FUNCS + ".\"CREATE_TIME\", " +
+        FUNCS + ".\"FUNC_TYPE\"" +
+        " FROM " + FUNCS +
+        " LEFT JOIN " + DBS + " ON " + FUNCS + ".\"DB_ID\" = " + DBS + ".\"DB_ID\"" +
+        " where " + FUNCS +".\"FUNC_ID\" in (" + funcIds + ") order by " + FUNCS + ".\"FUNC_NAME\" asc";
+
+    List<Function> results = new ArrayList<>();
+    TreeMap<Long, Function> funcs = new TreeMap<>();
+    final boolean doTrace = LOG.isDebugEnabled();
+    long start = doTrace ? System.nanoTime() : 0;
+    try (QueryWrapper query = new QueryWrapper(pm.newQuery("javax.jdo.query.SQL", queryText))) {
+      List<Object[]> queryResult = executeWithArray(query.getInnerQuery(), null, queryText);
+      long end = doTrace ? System.nanoTime() : 0;
+      MetastoreDirectSqlUtils.timingTrace(doTrace, queryText, start, end);
+
+      for (Object[] function : queryResult) {
+        Long funcId = MetastoreDirectSqlUtils.extractSqlLong(function[funcIdIndex]);
+        String funcName = MetastoreDirectSqlUtils.extractSqlString(function[funcNameIndex]);
+        String dbName = MetastoreDirectSqlUtils.extractSqlString(function[dbNameIndex]);
+        String funcClassName = MetastoreDirectSqlUtils.extractSqlString(function[funcClassNameIndex]);
+        String funcOwnerName = MetastoreDirectSqlUtils.extractSqlString(function[funcOwnerNameIndex]);
+        String funcOwnerType = MetastoreDirectSqlUtils.extractSqlString(function[funcOwnerTypeIndex]);
+        int funcCreateTime = MetastoreDirectSqlUtils.extractSqlInt(function[funcCreateTimeIndex]);
+        int funcType = MetastoreDirectSqlUtils.extractSqlInt(function[funcTypeIndex]);
+
+        Function func = new Function();
+        func.setFunctionName(funcName);
+        func.setDbName(dbName);
+        func.setCatName(catName);
+        func.setClassName(funcClassName);
+        func.setOwnerName(funcOwnerName);
+        func.setOwnerType(PrincipalType.valueOf(funcOwnerType));
+        func.setCreateTime(funcCreateTime);
+        func.setFunctionType(FunctionType.findByValue(funcType));
+        func.setResourceUris(new ArrayList<>());
+
+        results.add(func);
+        funcs.put(funcId, func);
+      }
+    }
+    MetastoreDirectSqlUtils.setFunctionResourceUris(FUNC_RU, pm, funcIds, funcs);
+    return results;
+  }
+
+  private List<Long> getFunctionIds(String catName) throws MetaException {
+    boolean doTrace = LOG.isDebugEnabled();
+
+    String queryText = "select " + FUNCS + ".\"FUNC_ID\" from " + FUNCS +
+        " LEFT JOIN " + DBS + " ON " + FUNCS + ".\"DB_ID\" = " + DBS + ".\"DB_ID\"" +
+        " where " + DBS + ".\"CTLG_NAME\" = ? ";
+
+    long start = doTrace ? System.nanoTime() : 0;
+    Object[] params = new Object[1];
+    params[0] = catName;
+    try (QueryWrapper query = new QueryWrapper(pm.newQuery("javax.jdo.query.SQL", queryText))) {
+      List<Object> sqlResult = executeWithArray(query.getInnerQuery(), params, queryText);
+      long queryTime = doTrace ? System.nanoTime() : 0;
+      MetastoreDirectSqlUtils.timingTrace(doTrace, queryText, start, queryTime);
+      final List<Long> result;
+      if (sqlResult.isEmpty()) {
+        result = Collections.emptyList();
+      } else {
+        result = new ArrayList<>(sqlResult.size());
+        for (Object fields : sqlResult) {
+          result.add(MetastoreDirectSqlUtils.extractSqlLong(fields));
+        }
+      }
+      return result;
+    }
   }
 }

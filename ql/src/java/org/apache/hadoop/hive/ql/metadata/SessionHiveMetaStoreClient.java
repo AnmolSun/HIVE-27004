@@ -823,7 +823,7 @@ public class SessionHiveMetaStoreClient extends HiveMetaStoreClientWithLocalCach
     if (pathStr != null) {
       try {
         tablePath = new Path(table.getSd().getLocation());
-        if (!getWh().isWritable(tablePath.getParent())) {
+        if (deleteData && !isExternalTable(table) && !getWh().isWritable(tablePath.getParent())) {
           throw new MetaException("Table metadata not deleted since " + tablePath.getParent() +
               " is not writable by " + SecurityUtils.getUser());
         }
@@ -1446,7 +1446,7 @@ public class SessionHiveMetaStoreClient extends HiveMetaStoreClientWithLocalCach
     List<Partition> result = new ArrayList<>();
     for (Pair<Integer, byte[]> pair : partExprs) {
       byte[] expr = pair.getRight();
-      String filter = generateJDOFilter(table, expr, conf.get(HiveConf.ConfVars.DEFAULTPARTITIONNAME.varname));
+      String filter = generateJDOFilter(table, expr, conf.get(HiveConf.ConfVars.DEFAULT_PARTITION_NAME.varname));
       List<Partition> partitions = tt.listPartitionsByFilter(filter);
       for (Partition p : partitions) {
         Partition droppedPartition = tt.dropPartition(p.getValues());
@@ -1688,7 +1688,7 @@ public class SessionHiveMetaStoreClient extends HiveMetaStoreClientWithLocalCach
   private String generateJDOFilter(org.apache.hadoop.hive.metastore.api.Table table, String filter)
       throws MetaException {
     ExpressionTree exprTree = org.apache.commons.lang3.StringUtils.isNotEmpty(filter)
-        ? PartFilterExprUtil.getFilterParser(filter).tree : ExpressionTree.EMPTY_TREE;
+        ? PartFilterExprUtil.parseFilterTree(filter) : ExpressionTree.EMPTY_TREE;
     return generateJDOFilter(table, exprTree);
   }
 
@@ -2525,4 +2525,14 @@ public class SessionHiveMetaStoreClient extends HiveMetaStoreClientWithLocalCach
     }
   }
 
+  @Override
+  public org.apache.hadoop.hive.metastore.api.Table getTranslateTableDryrun(
+      org.apache.hadoop.hive.metastore.api.Table tbl) throws AlreadyExistsException,
+      InvalidObjectException, MetaException, NoSuchObjectException, TException {
+    if (tbl.isTemporary()) {
+      org.apache.hadoop.hive.metastore.api.Table table = getTempTable(tbl.getDbName(), tbl.getTableName());
+      return table != null ? deepCopy(table) : tbl;
+    }
+    return super.getTranslateTableDryrun(tbl);
+  }
 }

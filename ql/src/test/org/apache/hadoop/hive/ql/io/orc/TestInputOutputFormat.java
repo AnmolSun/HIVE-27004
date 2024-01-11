@@ -1728,8 +1728,8 @@ public class TestInputOutputFormat {
           new MockBlock("host0", "host3-2", "host3-3"),
           new MockBlock("host4-1", "host4-2", "host4-3"),
           new MockBlock("host5-1", "host5-2", "host5-3")));
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, 300);
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMINSPLITSIZE, 200);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE, 300);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MIN_SPLIT_SIZE, 200);
     OrcInputFormat.Context context = new OrcInputFormat.Context(conf);
     OrcInputFormat.SplitGenerator splitter =
         new OrcInputFormat.SplitGenerator(new OrcInputFormat.SplitInfo(context, fs,
@@ -1752,8 +1752,8 @@ public class TestInputOutputFormat {
     assertEquals(1800, result.getStart());
     assertEquals(200, result.getLength());
     // test min = 0, max = 0 generates each stripe
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, 0);
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMINSPLITSIZE, 0);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE, 0);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MIN_SPLIT_SIZE, 0);
     context = new OrcInputFormat.Context(conf);
     splitter = new OrcInputFormat.SplitGenerator(new OrcInputFormat.SplitInfo(context, fs,
       fs.getFileStatus(new Path("/a/file")), null, null, true,
@@ -1777,8 +1777,8 @@ public class TestInputOutputFormat {
             new MockBlock("host0", "host3-2", "host3-3"),
             new MockBlock("host4-1", "host4-2", "host4-3"),
             new MockBlock("host5-1", "host5-2", "host5-3")));
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, 300);
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMINSPLITSIZE, 200);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE, 300);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MIN_SPLIT_SIZE, 200);
     conf.setBoolean(ColumnProjectionUtils.READ_ALL_COLUMNS, false);
     conf.set(ColumnProjectionUtils.READ_COLUMN_IDS_CONF_STR, "0");
     OrcInputFormat.Context context = new OrcInputFormat.Context(conf);
@@ -1802,8 +1802,8 @@ public class TestInputOutputFormat {
     assertEquals(43792, result.getProjectedColumnsUncompressedSize());
 
     // test min = 0, max = 0 generates each stripe
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, 0);
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMINSPLITSIZE, 0);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE, 0);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MIN_SPLIT_SIZE, 0);
     context = new OrcInputFormat.Context(conf);
     splitter = new OrcInputFormat.SplitGenerator(new OrcInputFormat.SplitInfo(context, fs,
         fs.getFileStatus(new Path("/a/file")), null, null, true,
@@ -1822,8 +1822,8 @@ public class TestInputOutputFormat {
     }
 
     // single split
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMAXSPLITSIZE, 1000);
-    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPREDMINSPLITSIZE, 100000);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE, 1000);
+    HiveConf.setLongVar(conf, HiveConf.ConfVars.MAPRED_MIN_SPLIT_SIZE, 100000);
     context = new OrcInputFormat.Context(conf);
     splitter = new OrcInputFormat.SplitGenerator(new OrcInputFormat.SplitInfo(context, fs,
         fs.getFileStatus(new Path("/a/file")), null, null, true,
@@ -2603,14 +2603,14 @@ public class TestInputOutputFormat {
     assertEquals("mock:/combinationAcid/p=0/base_0000010/bucket_00000",
         split.getPath().toString());
     assertEquals(0, split.getStart());
-    assertEquals(702, split.getLength());
+    assertEquals(709, split.getLength());
     split = (HiveInputFormat.HiveInputSplit) splits[1];
     assertEquals("org.apache.hadoop.hive.ql.io.orc.OrcInputFormat",
         split.inputFormatClassName());
     assertEquals("mock:/combinationAcid/p=0/base_0000010/bucket_00001",
         split.getPath().toString());
     assertEquals(0, split.getStart());
-    assertEquals(726, split.getLength());
+    assertEquals(733, split.getLength());
     CombineHiveInputFormat.CombineHiveInputSplit combineSplit =
         (CombineHiveInputFormat.CombineHiveInputSplit) splits[2];
     assertEquals(BUCKETS, combineSplit.getNumPaths());
@@ -2618,7 +2618,7 @@ public class TestInputOutputFormat {
       assertEquals("mock:/combinationAcid/p=1/00000" + bucket + "_0",
           combineSplit.getPath(bucket).toString());
       assertEquals(0, combineSplit.getOffset(bucket));
-      assertEquals(253, combineSplit.getLength(bucket));
+      assertEquals(260, combineSplit.getLength(bucket));
     }
     String[] hosts = combineSplit.getLocations();
     assertEquals(2, hosts.length);
@@ -3785,13 +3785,13 @@ public class TestInputOutputFormat {
 
     // Save the conf variable values so that they can be restored later.
     long oldDefaultStripeSize = conf.getLong(OrcConf.STRIPE_SIZE.getHiveConfName(), -1L);
-    long oldMaxSplitSize = conf.getLong(HiveConf.ConfVars.MAPREDMAXSPLITSIZE.varname, -1L);
+    long oldMaxSplitSize = conf.getLong(HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE.varname, -1L);
 
     // Set the conf variable values for this test.
     long newStripeSize = 10000L; // 10000 bytes per stripe
     long newMaxSplitSize = 100L; // 1024 bytes per split
     conf.setLong(OrcConf.STRIPE_SIZE.getHiveConfName(), newStripeSize);
-    conf.setLong(HiveConf.ConfVars.MAPREDMAXSPLITSIZE.varname, newMaxSplitSize);
+    conf.setLong(HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE.varname, newMaxSplitSize);
 
     AbstractSerDe serde = new OrcSerde();
     HiveOutputFormat<?, ?> outFormat = new OrcOutputFormat();
@@ -3838,10 +3838,10 @@ public class TestInputOutputFormat {
       conf.unset(OrcConf.STRIPE_SIZE.getHiveConfName());
     }
     if (oldMaxSplitSize != -1L) {
-      conf.setLong(HiveConf.ConfVars.MAPREDMAXSPLITSIZE.varname, oldMaxSplitSize);
+      conf.setLong(HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE.varname, oldMaxSplitSize);
     } else {
       // this means that nothing was set for default stripe size previously, so we should unset it.
-      conf.unset(HiveConf.ConfVars.MAPREDMAXSPLITSIZE.varname);
+      conf.unset(HiveConf.ConfVars.MAPRED_MAX_SPLIT_SIZE.varname);
     }
   }
 
@@ -4285,7 +4285,7 @@ public class TestInputOutputFormat {
     result = splitsForStreamingAcidTable(files);
     files.clear();
     assertEquals(1000, result.get(0).getLength());
-    assertEquals(95, result.get(1).getLength());
+    assertEquals(15, result.get(1).getLength());
 
     // 1 incomplete delta with 2 complete and 1 incomplete blocks: (1000 + 1000 + 500/800)
     files.addAll(mockDeltaWithSideFileForStreaming("delta_0000021_0000030_0000", 2500, 2800));
@@ -4293,7 +4293,7 @@ public class TestInputOutputFormat {
     files.clear();
     assertEquals(1000, result.get(0).getLength());
     assertEquals(1000, result.get(1).getLength());
-    assertEquals(800, result.get(2).getLength());
+    assertEquals(500, result.get(2).getLength());
 
     // 1 complete delta but shorter flush_length - though I think this is almost impossible
     files.addAll(mockDeltaWithSideFileForStreaming("delta_0000021_0000030_0000", 1000, 450));

@@ -4,8 +4,10 @@ POSTHOOK: query: drop materialized view if exists mat1
 POSTHOOK: type: DROP_MATERIALIZED_VIEW
 PREHOOK: query: drop table if exists tbl_ice
 PREHOOK: type: DROPTABLE
+PREHOOK: Output: database:default
 POSTHOOK: query: drop table if exists tbl_ice
 POSTHOOK: type: DROPTABLE
+POSTHOOK: Output: database:default
 PREHOOK: query: create table tbl_ice(a int, b string, c int) stored by iceberg stored as orc tblproperties ('format-version'='1')
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
@@ -61,18 +63,25 @@ Table Type:         	MATERIALIZED_VIEW
 Table Parameters:	 	 
 	COLUMN_STATS_ACCURATE	{\"COLUMN_STATS\":{\"b\":\"true\",\"c\":\"true\"}}
 	bucketing_version   	2                   
-	engine.hive.enabled 	true                
+	current-schema      	{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"c\",\"required\":false,\"type\":\"int\"},{\"id\":2,\"name\":\"b\",\"required\":false,\"type\":\"string\"}]}
+	current-snapshot-id 	#SnapshotId#
+	current-snapshot-summary	{\"added-data-files\":\"2\",\"added-records\":\"2\",\"added-files-size\":\"#Masked#\",\"changed-partition-count\":\"2\",\"total-records\":\"2\",\"total-files-size\":\"#Masked#\",\"total-data-files\":\"2\",\"total-delete-files\":\"0\",\"total-position-deletes\":\"0\",\"total-equality-deletes\":\"0\"}
+	current-snapshot-timestamp-ms	#Masked#       
+	default-partition-spec	{\"spec-id\":0,\"fields\":[{\"name\":\"b\",\"transform\":\"identity\",\"source-id\":2,\"field-id\":1000}]}
 	format-version      	1                   
-	iceberg.orc.files.only	false               
+	iceberg.orc.files.only	true                
 	metadata_location   	hdfs://### HDFS PATH ###
 	numFiles            	2                   
 	numRows             	2                   
+	parquet.compression 	zstd                
 	previous_metadata_location	hdfs://### HDFS PATH ###
+	snapshot-count      	1                   
 	storage_handler     	org.apache.iceberg.mr.hive.HiveIcebergStorageHandler
 	table_type          	ICEBERG             
-	totalSize           	1282                
+	totalSize           	#Masked#                 
 #### A masked pattern was here ####
 	uuid                	#Masked#
+	write.format.default	orc                 
 	 	 
 # Storage Information	 	 
 SerDe Library:      	org.apache.iceberg.mr.hive.HiveIcebergSerDe	 
@@ -88,8 +97,8 @@ Rewrite Enabled:    	Yes
 Outdated for Rewriting:	Unknown             	 
 	 	 
 # Materialized View Source table information	 	 
-Table name          	I/U/D since last rebuild	 
-hive.default.tbl_ice	0/0/0               	 
+Table name          	Snapshot            	 
+default.tbl_ice     	SnapshotContext{snapshotId=#SnapshotId#}	 
 PREHOOK: query: select * from mat1
 PREHOOK: type: QUERY
 PREHOOK: Input: default@mat1
@@ -139,19 +148,26 @@ Table Type:         	MATERIALIZED_VIEW
 Table Parameters:	 	 
 	COLUMN_STATS_ACCURATE	{\"COLUMN_STATS\":{\"b\":\"true\",\"c\":\"true\"}}
 	bucketing_version   	2                   
-	engine.hive.enabled 	true                
+	current-schema      	{\"type\":\"struct\",\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"c\",\"required\":false,\"type\":\"int\"},{\"id\":2,\"name\":\"b\",\"required\":false,\"type\":\"string\"}]}
+	current-snapshot-id 	#SnapshotId#
+	current-snapshot-summary	{\"added-data-files\":\"2\",\"added-records\":\"2\",\"added-files-size\":\"#Masked#\",\"changed-partition-count\":\"2\",\"total-records\":\"2\",\"total-files-size\":\"#Masked#\",\"total-data-files\":\"2\",\"total-delete-files\":\"0\",\"total-position-deletes\":\"0\",\"total-equality-deletes\":\"0\"}
+	current-snapshot-timestamp-ms	#Masked#       
+	default-partition-spec	{\"spec-id\":0,\"fields\":[{\"name\":\"b\",\"transform\":\"identity\",\"source-id\":2,\"field-id\":1000}]}
 	format-version      	2                   
-	iceberg.orc.files.only	false               
+	iceberg.orc.files.only	true                
 	metadata_location   	hdfs://### HDFS PATH ###
 	numFiles            	2                   
 	numRows             	2                   
+	parquet.compression 	zstd                
 	previous_metadata_location	hdfs://### HDFS PATH ###
+	snapshot-count      	1                   
 	storage_handler     	org.apache.iceberg.mr.hive.HiveIcebergStorageHandler
 	table_type          	ICEBERG             
-	totalSize           	1282                
+	totalSize           	#Masked#                 
 #### A masked pattern was here ####
 	uuid                	#Masked#
 	write.delete.mode   	merge-on-read       
+	write.format.default	orc                 
 	write.merge.mode    	merge-on-read       
 	write.update.mode   	merge-on-read       
 	 	 
@@ -169,5 +185,5 @@ Rewrite Enabled:    	Yes
 Outdated for Rewriting:	Unknown             	 
 	 	 
 # Materialized View Source table information	 	 
-Table name          	I/U/D since last rebuild	 
-hive.default.tbl_ice	0/0/0               	 
+Table name          	Snapshot            	 
+default.tbl_ice     	SnapshotContext{snapshotId=#SnapshotId#}	 
