@@ -787,8 +787,9 @@ public class Stmt {
     for (int i = 0; i < rows; i++) {
       HplsqlParser.Insert_stmt_rowContext row =ctx.insert_stmt_rows().insert_stmt_row(i);
       int cols = row.expr().size();
-      for (int j = 0; j < cols; j++) {         
-        String value = evalPop(row.expr(j)).toSqlString();
+      for (int j = 0; j < cols; j++) {
+        Var var = evalPop(row.expr(j));
+        String value = var.toSqlString();
         if (j == 0 && type == Conn.Type.HIVE && conf.insertValues == Conf.InsertValues.SELECT ) {
           sql.append("SELECT ");
         }
@@ -957,7 +958,11 @@ public class Stmt {
       int cols = query.columnCount();
       Row row = new Row();
       for (int i = 0; i < cols; i++) {
-        row.addColumnDefinition(query.metadata().columnName(i), query.metadata().columnTypeName(i));
+        String columnName = query.metadata().columnName(i);
+        if (columnName.contains(".")) {
+          columnName = columnName.substring(columnName.lastIndexOf('.') + 1);
+        }
+        row.addColumnDefinition(columnName, query.metadata().columnTypeName(i));
       }
       Var var = new Var(cursor, row);
       exec.addVariable(var);
@@ -1083,14 +1088,16 @@ public class Stmt {
       // Print the results
       else {
         int cols = query.columnCount();
-        while(query.next()) {
-          for(int i = 0; i < cols; i++) {
-            if(i > 1) {
-              console.print("\t");
+        if (cols > 0) {
+          while (query.next()) {
+            for (int i = 0; i < cols; i++) {
+              if (i > 1) {
+                console.print("\t");
+              }
+              console.print(query.column(i, String.class));
             }
-            console.print(query.column(i, String.class));
+            console.printLine("");
           }
-          console.printLine("");
         }
       }
     } catch(QueryException e) {
@@ -1166,13 +1173,17 @@ public class Stmt {
    */
   public Integer update(HplsqlParser.Update_stmtContext ctx) {
     trace(ctx, "UPDATE");
-    boolean oldBuildSql = exec.buildSql;
     String sql = null;
-    try {
-      exec.buildSql = true;
-      sql = generateUpdateQuery(ctx);
-    } finally {
-      exec.buildSql = oldBuildSql;
+    if (exec.getOffline()) {
+      sql = exec.getFormattedText(ctx);
+    } else {
+      boolean oldBuildSql = exec.buildSql;
+      try {
+        exec.buildSql = true;
+        sql = generateUpdateQuery(ctx);
+      } finally {
+        exec.buildSql = oldBuildSql;
+      }
     }
     trace(ctx, sql);
     QueryResult query = queryExecutor.executeQuery(sql, ctx);

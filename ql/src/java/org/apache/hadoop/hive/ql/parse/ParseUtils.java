@@ -24,12 +24,14 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 
@@ -37,6 +39,8 @@ import com.google.common.collect.Lists;
 import org.antlr.runtime.tree.CommonTree;
 import org.antlr.runtime.tree.Tree;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.util.Pair;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -278,18 +282,23 @@ public final class ParseUtils {
     return className;
   }
 
-  public static boolean containsTokenOfType(ASTNode root, Integer ... tokens) {
-    final Set<Integer> tokensToMatch = new HashSet<Integer>();
-    for (Integer tokenTypeToMatch : tokens) {
-      tokensToMatch.add(tokenTypeToMatch);
-    }
+  public static Pair<Boolean, String> containsTokenOfType(ASTNode root, Integer ... tokens) {
+    final Set<Integer> tokensToMatch = new HashSet<>(Arrays.asList(tokens));
+    final String[] matched = {null};
 
-    return ParseUtils.containsTokenOfType(root, new PTFUtils.Predicate<ASTNode>() {
+    boolean check =  ParseUtils.containsTokenOfType(root, new PTFUtils.Predicate<ASTNode>() {
       @Override
       public boolean apply(ASTNode node) {
-        return tokensToMatch.contains(node.getType());
+        if (tokensToMatch.contains(node.getType())) {
+          matched[0] = node.getText();
+          return true;
+        }
+
+        return false;
       }
     });
+
+    return Pair.of(check, matched[0]);
   }
 
   public static boolean containsTokenOfType(ASTNode root, PTFUtils.Predicate<ASTNode> predicate) {
@@ -317,7 +326,7 @@ public final class ParseUtils {
   }
 
   private static void handleSetColRefs(ASTNode tree, Context ctx) {
-    CalcitePlanner.ASTSearcher astSearcher = new CalcitePlanner.ASTSearcher();
+    ASTSearcher astSearcher = new ASTSearcher();
     while (true) {
       astSearcher.reset();
       ASTNode setCols = astSearcher.depthFirstSearch(tree, HiveParser.TOK_SETCOLREF);
@@ -534,12 +543,10 @@ public final class ParseUtils {
     return sb.toString();
   }
 
-  public static CBOPlan parseQuery(HiveConf conf, String viewQuery)
+  public static CBOPlan parseQuery(Context ctx, String viewQuery)
       throws SemanticException, ParseException {
-    final Context ctx = new Context(conf);
-    ctx.setIsLoadingMaterializedView(true);
     final ASTNode ast = parse(viewQuery, ctx);
-    final CalcitePlanner analyzer = getAnalyzer(conf, ctx);
+    final CalcitePlanner analyzer = getAnalyzer((HiveConf) ctx.getConf(), ctx);
     RelNode logicalPlan = analyzer.genLogicalPlan(ast);
     return new CBOPlan(
         ast, logicalPlan, analyzer.getMaterializationValidationResult().getSupportedRewriteAlgorithms());
@@ -574,8 +581,8 @@ public final class ParseUtils {
       CommonTree ast, Table table, Configuration conf, boolean canGroupExprs) throws SemanticException {
     String defaultPartitionName = HiveConf.getVar(conf, HiveConf.ConfVars.DEFAULT_PARTITION_NAME);
     Map<String, String> colTypes = new HashMap<>();
-    List<FieldSchema> partitionKeys = table.getStorageHandler() != null && table.getStorageHandler().alwaysUnpartitioned() ?
-            table.getStorageHandler().getPartitionKeys(table) : table.getPartitionKeys();
+    List<FieldSchema> partitionKeys = table.hasNonNativePartitionSupport() ?
+        table.getStorageHandler().getPartitionKeys(table) : table.getPartitionKeys();
     for (FieldSchema fs : partitionKeys) {
       colTypes.put(fs.getName().toLowerCase(), fs.getType());
     }
@@ -592,7 +599,24 @@ public final class ParseUtils {
       for (int i = 0; i < partSpecTree.getChildCount(); ++i) {
         CommonTree partSpecSingleKey = (CommonTree) partSpecTree.getChild(i);
         assert (partSpecSingleKey.getType() == HiveParser.TOK_PARTVAL);
-        String key = stripIdentifierQuotes(partSpecSingleKey.getChild(0).getText()).toLowerCase();
+        String transform = null;
+        String key;
+        Tree partitionTree = partSpecSingleKey.getChild(0);
+        if (partitionTree.getType() == HiveParser.TOK_FUNCTION) {
+          int childCount = partitionTree.getChildCount();
+          if (childCount == 2) {  // Case with unary function
+            key = stripIdentifierQuotes(partitionTree.getChild(1).getText()).toLowerCase();
+            transform = partitionTree.getChild(0).getText().toLowerCase() + "(" + key + ")";
+          } else if (childCount == 3) {  // Case with transform, columnName, and integer
+            key = stripIdentifierQuotes(partitionTree.getChild(2).getText()).toLowerCase();
+            String transformParam = partitionTree.getChild(1).getText();
+            transform = partitionTree.getChild(0).getText().toLowerCase() + "(" + transformParam + ", " + key + ")";
+          } else {
+            throw new SemanticException("Unexpected number of children in partition spec");
+          }
+        } else {
+          key = stripIdentifierQuotes(partitionTree.getText()).toLowerCase();
+        }
         String operator = partSpecSingleKey.getChild(1).getText();
         ASTNode partValNode = (ASTNode)partSpecSingleKey.getChild(2);
         TypeCheckCtx typeCheckCtx = new TypeCheckCtx(null);
@@ -602,7 +626,7 @@ public final class ParseUtils {
 
         boolean isDefaultPartitionName = val.equals(defaultPartitionName);
 
-        String type = colTypes.get(key);
+        String type = transform != null ? "string" : colTypes.get(key);
         if (type == null) {
           throw new SemanticException("Column " + key + " is not a partition key");
         }
@@ -617,7 +641,7 @@ public final class ParseUtils {
           }
         }
 
-        ExprNodeColumnDesc column = new ExprNodeColumnDesc(pti, key, null, true);
+        ExprNodeColumnDesc column = new ExprNodeColumnDesc(pti, ObjectUtils.defaultIfNull(transform, key), null, true);
         ExprNodeGenericFuncDesc op;
         if (!isDefaultPartitionName) {
           op = PartitionUtils.makeBinaryPredicate(operator, column, new ExprNodeConstantDesc(pti, val));
@@ -774,5 +798,15 @@ public final class ParseUtils {
       }
     }
     return result;
+  }
+
+  /**
+   * Returns the root node's string representation without the "TOK_" prefix.
+   * @param node the ASTNode
+   */
+  public static String getNodeName(ASTNode node) {
+    return Optional.ofNullable(node)
+        .map(ASTNode::getText).map(text -> text.substring("TOK_".length()))
+        .orElse("");
   }
 }

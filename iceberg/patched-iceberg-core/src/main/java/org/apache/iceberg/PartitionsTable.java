@@ -32,6 +32,8 @@ import org.apache.iceberg.util.ParallelIterable;
 import org.apache.iceberg.util.PartitionUtil;
 import org.apache.iceberg.util.StructLikeMap;
 
+// TODO: remove class once upgraded to Iceberg v1.7.0
+
 /** A {@link Table} implementation that exposes a table's partitions as rows. */
 public class PartitionsTable extends BaseMetadataTable {
 
@@ -202,23 +204,12 @@ public class PartitionsTable extends BaseMetadataTable {
     return CloseableIterable.transform(
         ManifestFiles.open(manifest, table.io(), table.specs())
             .caseSensitive(scan.isCaseSensitive())
-            .select(scanColumns(manifest.content())) // don't select stats columns
+            .select(BaseScan.scanColumns(manifest.content())) // don't select stats columns
             .liveEntries(),
         t ->
             (ManifestEntry<? extends ContentFile<?>>)
                 // defensive copy of manifest entry without stats columns
                 t.copyWithoutStats());
-  }
-
-  private static List<String> scanColumns(ManifestContent content) {
-    switch (content) {
-      case DATA:
-        return BaseScan.SCAN_COLUMNS;
-      case DELETES:
-        return BaseScan.DELETE_SCAN_COLUMNS;
-      default:
-        throw new UnsupportedOperationException("Cannot read unknown manifest type: " + content);
-    }
   }
 
   private static CloseableIterable<ManifestFile> filteredManifests(
@@ -315,12 +306,12 @@ public class PartitionsTable extends BaseMetadataTable {
           this.dataFileSizeInBytes += file.fileSizeInBytes();
           break;
         case POSITION_DELETES:
-          this.posDeleteRecordCount = file.recordCount();
+          this.posDeleteRecordCount += file.recordCount();
           this.posDeleteFileCount += 1;
           this.specId = file.specId();
           break;
         case EQUALITY_DELETES:
-          this.eqDeleteRecordCount = file.recordCount();
+          this.eqDeleteRecordCount += file.recordCount();
           this.eqDeleteFileCount += 1;
           this.specId = file.specId();
           break;

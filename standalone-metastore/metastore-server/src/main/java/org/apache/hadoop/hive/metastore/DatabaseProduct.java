@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.metastore;
 
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.sql.SQLTransactionRollbackException;
@@ -27,8 +28,8 @@ import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Stream;
-import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.hadoop.conf.Configurable;
@@ -44,6 +45,8 @@ import org.slf4j.LoggerFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 
+import javax.sql.DataSource;
+
 /** Database product inferred via JDBC. Encapsulates all SQL logic associated with
  * the database product.
  * This class is a singleton, which is instantiated the first time
@@ -52,18 +55,26 @@ import com.google.common.base.Preconditions;
  * */
 public class DatabaseProduct implements Configurable {
   static final private Logger LOG = LoggerFactory.getLogger(DatabaseProduct.class.getName());
-  private static final Class<SQLException>[] unrecoverableSqlExceptions = new Class[]{
-          // TODO: collect more unrecoverable SQLExceptions
-          SQLIntegrityConstraintViolationException.class
+  private static final Class<Exception>[] unrecoverableExceptions = new Class[]{
+          // TODO: collect more unrecoverable Exceptions
+          SQLIntegrityConstraintViolationException.class,
+          DeadlineException.class
   };
 
+  /**
+   * Derby specific concurrency control
+   */
+  private static final ReentrantLock derbyLock = new ReentrantLock(true);
+
   public enum DbType {DERBY, MYSQL, POSTGRES, ORACLE, SQLSERVER, CUSTOM, UNDEFINED};
-  public DbType dbType;
+  static public DbType dbType;
 
   // Singleton instance
   private static DatabaseProduct theDatabaseProduct;
 
   Configuration myConf;
+
+  private String productName;
   /**
    * Protected constructor for singleton class
    */
@@ -76,6 +87,16 @@ public class DatabaseProduct implements Configurable {
   public static final String POSTGRESQL_NAME = "postgresql";
   public static final String ORACLE_NAME = "oracle";
   public static final String UNDEFINED_NAME = "other";
+
+  public static DatabaseProduct determineDatabaseProduct(DataSource connPool,
+      Configuration conf) {
+    try (Connection conn = connPool.getConnection()) {
+      String s = conn.getMetaData().getDatabaseProductName();
+      return determineDatabaseProduct(s, conf);
+    } catch (SQLException e) {
+      throw new IllegalStateException("Unable to get database product name", e);
+    }
+  }
 
   /**
    * Determine the database product type
@@ -138,6 +159,7 @@ public class DatabaseProduct implements Configurable {
         }
 
         theDatabaseProduct.dbType = dbt;
+        theDatabaseProduct.productName = productName;
       }
     }
     return theDatabaseProduct;
@@ -164,7 +186,7 @@ public class DatabaseProduct implements Configurable {
   }
 
   public static boolean isRecoverableException(Throwable t) {
-    return Stream.of(unrecoverableSqlExceptions)
+    return Stream.of(unrecoverableExceptions)
                  .allMatch(ex -> ExceptionUtils.indexOfType(t, ex) < 0);
   }
 
@@ -219,6 +241,17 @@ public class DatabaseProduct implements Configurable {
         || (isDERBY() && "42X05".equalsIgnoreCase(e.getSQLState()));
   }
 
+  public String toVarChar(String column) {
+    switch (dbType) {
+      case DERBY:
+        return String.format("CAST(%s AS VARCHAR(4000))", column);
+      case ORACLE:
+        return String.format("to_char(%s)", column);
+      default:
+        return column;
+    }
+  }
+
   /**
    * Whether the RDBMS has restrictions on IN list size (explicit, or poor perf-based).
    */
@@ -264,7 +297,9 @@ public class DatabaseProduct implements Configurable {
 
   protected String toTimestamp(String tableValue) {
     if (isORACLE()) {
-      return "TO_TIMESTAMP(" + tableValue + ", 'YYYY-MM-DD HH:mm:ss')";
+      return "TO_TIMESTAMP(" + tableValue + ", 'YYYY-MM-DD HH24:mi:ss')";
+    } else if (isSQLSERVER()) {
+      return "CONVERT(DATETIME, " + tableValue + ")";
     } else {
       return "cast(" + tableValue + " as TIMESTAMP)";
     }
@@ -775,5 +810,30 @@ public class DatabaseProduct implements Configurable {
   @Override
   public void setConf(Configuration c) {
     myConf = c;
+  }
+
+  /**
+   * lockInternal() and {@link #unlockInternal()} are used to serialize those operations that require
+   * Select ... For Update to sequence operations properly.  In practice that means when running
+   * with Derby database.  See more notes at class level.
+   */
+  public void lockInternal() {
+    if (isDERBY()) {
+      derbyLock.lock();
+    }
+  }
+
+  public void unlockInternal() {
+    if (isDERBY()) {
+      derbyLock.unlock();
+    }
+  }
+
+  public static boolean isDerbyOracle() {
+    return dbType == DbType.DERBY || dbType == DbType.ORACLE;
+  }
+
+  public String getProductName() {
+    return productName;
   }
 }

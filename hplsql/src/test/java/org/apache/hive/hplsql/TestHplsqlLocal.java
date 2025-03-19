@@ -18,10 +18,6 @@
 
 package org.apache.hive.hplsql;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
-import java.io.StringReader;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
@@ -30,9 +26,6 @@ import org.junit.Test;
  * Unit tests for HPL/SQL (no Hive connection required)
  */
 public class TestHplsqlLocal {
-
-  private final ByteArrayOutputStream out = new ByteArrayOutputStream();
-  private final ByteArrayOutputStream err = new ByteArrayOutputStream();
 
   @Test
   public void testAdd() throws Exception {
@@ -65,8 +58,23 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testCast() throws Exception {
+    run("cast");
+  }
+
+  @Test
+  public void testCast2() throws Exception {
+    run("cast2");
+  }
+
+  @Test
   public void testChar() throws Exception {
     run("char");
+  }
+
+  @Test
+  public void testCoalesce() throws Exception {
+    run("coalesce");
   }
 
   @Test
@@ -260,6 +268,11 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testInstr() throws Exception {
+    run("instr");
+  }
+
+  @Test
   public void testInterval() throws Exception {
     run("interval");
   }
@@ -275,13 +288,28 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testLength() throws Exception {
+    run("length");
+  }
+
+  @Test
   public void testLen() throws Exception {
     run("len");
   }
 
   @Test
+  public void testLower() throws Exception {
+    run("lower");
+  }
+
+  @Test
   public void testMultDiv() throws Exception {
     run("mult_div");
+  }
+
+  @Test
+  public void testNvl() throws Exception {
+    run("nvl");
   }
 
   @Test
@@ -292,6 +320,11 @@ public class TestHplsqlLocal {
   @Test
   public void testPrint() throws Exception {
     run("print");
+  }
+
+  @Test
+  public void testReplace() throws Exception {
+    run("replace");
   }
   
   @Test
@@ -325,6 +358,11 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testTimestamp() throws Exception {
+    run("timestamp");
+  }
+
+  @Test
   public void testToChar() throws Exception {
     run("to_char");
   }
@@ -332,6 +370,11 @@ public class TestHplsqlLocal {
   @Test
   public void testToTimestamp() throws Exception {
     run("to_timestamp");
+  }
+
+  @Test
+  public void testTrim() throws Exception {
+    run("trim");
   }
 
   @Test
@@ -418,38 +461,18 @@ public class TestHplsqlLocal {
    * Run a test file
    */
   void run(String testFile) throws Exception {
-    System.setOut(new PrintStream(out));
-    System.setErr(new PrintStream(err));
+    TestConsole console = new TestConsole("(Configuration file|Parser tree):.*");
     Exec exec = new Exec();
+    exec.console = console;
+
     String[] args = { "-f", "src/test/queries/local/" + testFile + ".sql", "-trace" };
     exec.run(args);
-    String sout = getTestOutput(out.toString());
-    String serr = getTestOutput(err.toString());
+    String sout = console.out.toString();
+    String serr = console.err.toString();
     String output = (sout + (serr.isEmpty() ? "" : serr));
     FileUtils.writeStringToFile(new java.io.File("target/tmp/log/" + testFile + ".out.txt"), output);
     String t = FileUtils.readFileToString(new java.io.File("src/test/results/local/" + testFile + ".out.txt"), "utf-8");
-    System.setOut(null);
     Assert.assertEquals(t, output);
   }
 
-  /**
-   * Get test output
-   */
-  String getTestOutput(String s) throws Exception {
-    StringBuilder sb = new StringBuilder();
-    BufferedReader reader = new BufferedReader(new StringReader(s));
-    String line = null;
-    while ((line = reader.readLine()) != null) {
-      if (!line.startsWith("log4j:")
-              && !line.contains("INFO Log4j")
-              && !line.startsWith("SLF4J")
-              && !line.contains(" StatusLogger ")
-              && !line.contains("Configuration file: ")
-              && !line.contains("Parser tree: ")) {
-        sb.append(line);
-        sb.append("\n");
-      }
-    }
-    return sb.toString();
-  }
 }

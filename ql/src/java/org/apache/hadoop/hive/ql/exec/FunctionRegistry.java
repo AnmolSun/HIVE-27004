@@ -273,6 +273,10 @@ public final class FunctionRegistry {
         "=", "==", "<=>", "!=", "<>", "<", "<=", ">", ">=",
         "index"));
   }
+  
+  private static final Set<PrimitiveGrouping> STRING_FRIENDLY_GROUPS = new HashSet<>(
+      Arrays.asList(PrimitiveGrouping.DATE_GROUP, PrimitiveGrouping.NUMERIC_GROUP, PrimitiveGrouping.BOOLEAN_GROUP)
+  );
 
   // registry for system functions
   private static final Registry system = new Registry(true);
@@ -590,7 +594,6 @@ public final class FunctionRegistry {
     system.registerGenericUDF("create_union", GenericUDFUnion.class);
     system.registerGenericUDF("extract_union", GenericUDFExtractUnion.class);
 
-    system.registerGenericUDF("case", GenericUDFCase.class);
     system.registerGenericUDF("when", GenericUDFWhen.class);
     system.registerGenericUDF("nullif", GenericUDFNullif.class);
     system.registerGenericUDF("hash", GenericUDFHash.class);
@@ -615,6 +618,9 @@ public final class FunctionRegistry {
     system.registerGenericUDF("array_intersect", GenericUDFArrayIntersect.class);
     system.registerGenericUDF("array_union", GenericUDFArrayUnion.class);
     system.registerGenericUDF("array_remove", GenericUDFArrayRemove.class);
+    system.registerGenericUDF("array_position", GenericUDFArrayPosition.class);
+    system.registerGenericUDF("array_append", GenericUDFArrayAppend.class);
+    system.registerGenericUDF("array_compact", GenericUDFArrayCompact.class);
     system.registerGenericUDF("deserialize", GenericUDFDeserialize.class);
     system.registerGenericUDF("sentences", GenericUDFSentences.class);
     system.registerGenericUDF("map_keys", GenericUDFMapKeys.class);
@@ -1163,13 +1169,11 @@ public final class FunctionRegistry {
       }
     }
 
-    // Handle date-string common category and numeric-string common category
-    if (pgA == PrimitiveGrouping.STRING_GROUP
-        && (pgB == PrimitiveGrouping.DATE_GROUP || pgB == PrimitiveGrouping.NUMERIC_GROUP)) {
+    // Handle common category for date-string, numeric-string, and boolean-string types
+    if (pgA == PrimitiveGrouping.STRING_GROUP && STRING_FRIENDLY_GROUPS.contains(pgB)) {
       return pcA;
     }
-    if (pgB == PrimitiveGrouping.STRING_GROUP
-        && (pgA == PrimitiveGrouping.DATE_GROUP || pgA == PrimitiveGrouping.NUMERIC_GROUP)) {
+    if (pgB == PrimitiveGrouping.STRING_GROUP && STRING_FRIENDLY_GROUPS.contains(pgA)) {
       return pcB;
     }
 

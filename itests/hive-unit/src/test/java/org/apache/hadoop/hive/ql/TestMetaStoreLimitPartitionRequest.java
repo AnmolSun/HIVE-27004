@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfForTest;
 import org.apache.hadoop.hive.metastore.HMSHandler;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hive.jdbc.miniHS2.MiniHS2;
@@ -64,7 +65,7 @@ public class TestMetaStoreLimitPartitionRequest {
   @BeforeClass
   public static void beforeTest() throws Exception {
     Class.forName(MiniHS2.getJdbcDriverName());
-    conf = new HiveConf();
+    conf = new HiveConfForTest(TestMetaStoreLimitPartitionRequest.class);
     DriverManager.setLoginTimeout(0);
 
     conf.setBoolVar(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY, false);
@@ -73,6 +74,9 @@ public class TestMetaStoreLimitPartitionRequest {
     conf.setBoolVar(HiveConf.ConfVars.METASTORE_TRY_DIRECT_SQL, true);
     conf.setBoolVar(HiveConf.ConfVars.DYNAMIC_PARTITIONING, true);
     conf.setBoolVar(HiveConf.ConfVars.HIVE_CBO_ENABLED, false);
+    // Disable loading dynamic partitions from partition names in this test
+    // because get_partitions_by_names will also hit partition limit since HIVE-28062.
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_LOAD_DYNAMIC_PARTITIONS_SCAN_SPECIFIC_PARTITIONS, false);
 
     miniHS2 = new MiniHS2.Builder().withConf(conf).build();
     Map<String, String> overlayProps = new HashMap<String, String>();
@@ -157,7 +161,7 @@ public class TestMetaStoreLimitPartitionRequest {
   @Test
   public void testSimpleQueryWithDirectSqlTooManyPartitions() throws Exception {
     String queryString = "select value from %s where ds>'2008-04-20'";
-    executeQueryExceedPartitionLimit(queryString, 8);
+    executeQueryExceedPartitionLimit(queryString, 5);
   }
 
   @Test
@@ -241,20 +245,20 @@ public class TestMetaStoreLimitPartitionRequest {
   public void testQueryWithInWithFallbackToORMTooManyPartitions() throws Exception {
     setupNumTmpTable();
     String queryString = "select value from %s a where a.num in (select value from " + TABLE_NAME + "_num_tmp)";
-    executeQueryExceedPartitionLimit(queryString, 12);
+    executeQueryExceedPartitionLimit(queryString, 5);
   }
 
   @Test
   public void testQueryWithInWithFallbackToORMTooManyPartitions2() throws Exception {
     setupNumTmpTable();
     String queryString = "select value from %s a where a.num in (select value from " + TABLE_NAME + "_num_tmp where value='25')";
-    executeQueryExceedPartitionLimit(queryString, 12);
+    executeQueryExceedPartitionLimit(queryString, 5);
   }
 
   @Test
   public void testQueryWithLikeWithFallbackToORMTooManyPartitions() throws Exception {
     String queryString = "select value from %s where num like '3%%'";
-    executeQueryExceedPartitionLimit(queryString, 6);
+    executeQueryExceedPartitionLimit(queryString, 5);
   }
 
   private void setupNumTmpTable() throws SQLException {

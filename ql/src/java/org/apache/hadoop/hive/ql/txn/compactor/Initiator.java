@@ -19,15 +19,14 @@ package org.apache.hadoop.hive.ql.txn.compactor;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Sets;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.hive.common.ServerUtils;
 import org.apache.hadoop.hive.common.ValidTxnList;
-import org.apache.hadoop.hive.conf.Constants;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.*;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hadoop.hive.metastore.metrics.MetricsConstants;
 import org.apache.hadoop.hive.metastore.metrics.PerfLogger;
+import org.apache.hadoop.hive.metastore.txn.NoMutex;
 import org.apache.hadoop.hive.metastore.txn.entities.CompactionInfo;
 import org.apache.hadoop.hive.metastore.txn.TxnCommonUtils;
 import org.apache.hadoop.hive.metastore.txn.TxnStore;
@@ -51,13 +50,14 @@ import static org.apache.hadoop.hive.conf.Constants.COMPACTOR_INTIATOR_THREAD_NA
  * A class to initiate compactions.  This will run in a separate thread.
  * It's critical that there exactly 1 of these in a given warehouse.
  */
-public class Initiator extends InitiatorBase {
+public class Initiator extends MetaStoreCompactorThread {
   static final private String CLASS_NAME = Initiator.class.getName();
   static final private Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
 
   private ExecutorService compactionExecutor;
 
   private boolean metricsEnabled;
+  private boolean shouldUseMutex = true;
 
   @Override
   public void run() {
@@ -72,6 +72,7 @@ public class Initiator extends InitiatorBase {
       long abortedTimeThreshold = HiveConf
           .getTimeVar(conf, HiveConf.ConfVars.HIVE_COMPACTOR_ABORTEDTXN_TIME_THRESHOLD,
               TimeUnit.MILLISECONDS);
+      TxnStore.MutexAPI mutex = shouldUseMutex ? txnHandler.getMutexAPI() : new NoMutex();
 
       // Make sure we run through the loop once before checking to stop as this makes testing
       // much easier.  The stop value is only for testing anyway and not used when called from
@@ -80,13 +81,10 @@ public class Initiator extends InitiatorBase {
         PerfLogger perfLogger = PerfLogger.getPerfLogger(false);
         long startedAt = -1;
         long prevStart;
-        TxnStore.MutexAPI.LockHandle handle = null;
-        boolean exceptionally = false;
 
         // Wrap the inner parts of the loop in a catch throwable so that any errors in the loop
         // don't doom the entire thread.
-        try {
-          handle = txnHandler.getMutexAPI().acquireLock(TxnStore.MUTEX_KEY.Initiator.name());
+        try (TxnStore.MutexAPI.LockHandle handle = mutex.acquireLock(TxnStore.MUTEX_KEY.Initiator.name())) {
           startedAt = System.currentTimeMillis();
           prevStart = handle.getLastUpdateTime();
 
@@ -141,7 +139,7 @@ public class Initiator extends InitiatorBase {
               }
 
               Table t = metadataCache.computeIfAbsent(ci.getFullTableName(), () -> resolveTable(ci));
-              ci.poolName = getPoolName(ci, t);
+              ci.poolName = CompactorUtil.getPoolName(conf, t, metadataCache);
               Partition p = resolvePartition(ci);
               if (p == null && ci.partName != null) {
                 LOG.info("Can't find partition " + ci.getFullPartitionName() +
@@ -153,11 +151,11 @@ public class Initiator extends InitiatorBase {
                * Therefore, using a thread pool here and running checkForCompactions in parallel */
               String tableName = ci.getFullTableName();
               String partition = ci.getFullPartitionName();
-
+              ci.initiatorVersion = this.runtimeVersion;
               CompletableFuture<Void> asyncJob =
                   CompletableFuture.runAsync(
                           CompactorUtil.ThrowingRunnable.unchecked(() ->
-                              scheduleCompactionIfRequired(ci, t, p, runAs, metricsEnabled)), compactionExecutor)
+                                  CompactorUtil.scheduleCompactionIfRequired(ci, t, p, runAs, metricsEnabled, hostName, txnHandler, conf)), compactionExecutor)
                       .exceptionally(exc -> {
                         LOG.error("Error while running scheduling the compaction on the table {} / partition {}.", tableName, partition, exc);
                         return null;
@@ -176,16 +174,13 @@ public class Initiator extends InitiatorBase {
 
           // Check for timed out remote workers.
           recoverFailedCompactions(true);
+          handle.releaseLocks(startedAt);
         } catch (InterruptedException e) {
           // do not ignore interruption requests
           return;
         } catch (Throwable t) {
           LOG.error("Initiator loop caught unexpected exception this time through the loop", t);
-          exceptionally = true;
         } finally {
-          if (handle != null) {
-            if (!exceptionally) handle.releaseLocks(startedAt); else handle.releaseLocks();
-          }
           if (metricsEnabled) {
             perfLogger.perfLogEnd(CLASS_NAME, MetricsConstants.COMPACTION_INITIATOR_CYCLE);
             updateCycleDurationMetric(MetricsConstants.COMPACTION_INITIATOR_CYCLE_DURATION, startedAt);
@@ -213,21 +208,9 @@ public class Initiator extends InitiatorBase {
             MetastoreConf.ConfVars.COMPACTOR_INITIATOR_TABLECACHE_ON);
   }
 
-  private String getPoolName(CompactionInfo ci, Table t) throws Exception {
-    Map<String, String> params = t.getParameters();
-    String poolName = params == null ? null : params.get(Constants.HIVE_COMPACTOR_WORKER_POOL);
-    if (StringUtils.isBlank(poolName)) {
-      params = metadataCache.computeIfAbsent(ci.dbname, () -> resolveDatabase(ci)).getParameters();
-      poolName = params == null ? null : params.get(Constants.HIVE_COMPACTOR_WORKER_POOL);
-    }
-    return poolName;
-  }
-
   private Database resolveDatabase(CompactionInfo ci) throws MetaException, NoSuchObjectException {
     return CompactorUtil.resolveDatabase(conf, ci.dbname);
   }
-
-
 
   @VisibleForTesting
   protected String resolveUserToRunAs(Map<String, String> cache, Table t, Partition p)
@@ -439,5 +422,10 @@ public class Initiator extends InitiatorBase {
         }
       }
     }
+  }
+
+  @Override
+  public void enforceMutex(boolean enableMutex) {
+    this.shouldUseMutex = enableMutex;
   }
 }

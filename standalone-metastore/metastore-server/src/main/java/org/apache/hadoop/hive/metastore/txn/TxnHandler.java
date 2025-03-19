@@ -99,6 +99,7 @@ import org.apache.hadoop.hive.metastore.txn.jdbc.ParameterizedCommand;
 import org.apache.hadoop.hive.metastore.txn.retry.SqlRetryCallProperties;
 import org.apache.hadoop.hive.metastore.txn.retry.SqlRetryException;
 import org.apache.hadoop.hive.metastore.txn.retry.SqlRetryHandler;
+import org.apache.hadoop.hive.metastore.txn.service.AcidHouseKeeperService;
 import org.apache.hadoop.hive.metastore.utils.JavaUtils;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreServerUtils;
 import org.apache.hadoop.util.StringUtils;
@@ -129,6 +130,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
 
+import static org.apache.hadoop.hive.metastore.txn.TxnUtils.getEpochFn;
 import static org.apache.hadoop.hive.metastore.utils.MetaStoreUtils.getDefaultCatalog;
 
 /**
@@ -290,11 +292,10 @@ public abstract class TxnHandler implements TxnStore, TxnStore.MutexAPI {
             }
           }
           if (dbProduct == null) {
-            try (Connection dbConn = getDbConn(Connection.TRANSACTION_READ_COMMITTED, connPool)) {
-              determineDatabaseProduct(dbConn);
-            } catch (SQLException e) {
-              LOG.error("Unable to determine database product", e);
-              throw new RuntimeException(e);
+            dbProduct = DatabaseProduct.determineDatabaseProduct(connPool, conf);
+            if (dbProduct.isUNDEFINED()) {
+              String msg = "Unrecognized database product name <" + dbProduct.getProductName() + ">";
+              throw new IllegalStateException(msg);
             }
           }
           if (sqlGenerator == null) {
@@ -372,6 +373,26 @@ public abstract class TxnHandler implements TxnStore, TxnStore.MutexAPI {
     return jdbcResource.execute(new GetOpenTxnsListHandler(false, openTxnTimeOutMillis))
         .toOpenTxnsResponse(excludeTxnTypes);
   }
+
+  @Override
+  public List<Long> getOpenTxnForPolicy(List<Long> openTxnList, String replPolicy) {
+
+    if (openTxnList.isEmpty()) {
+      return Collections.emptyList();
+    }
+      List<Long> targetTxnIds = null;
+      try {
+          targetTxnIds = jdbcResource.execute(new GetTargetTxnIdListForPolicyHandler(replPolicy, openTxnList));
+      } catch (MetaException e) {
+          throw new RuntimeException(e);
+      }
+
+      if (targetTxnIds.isEmpty()) {
+      LOG.info("There are no Repl Created open transactions on DR side.");
+    }
+    return targetTxnIds;
+  }
+
 
   /**
    * Retry-by-caller note:
@@ -703,16 +724,16 @@ public abstract class TxnHandler implements TxnStore, TxnStore.MutexAPI {
   @Override
   public boolean heartbeatLockMaterializationRebuild(String dbName, String tableName, long txnId) throws MetaException {
     int result = jdbcResource.execute(
-        "UPDATE \"MATERIALIZATION_REBUILD_LOCKS\"" +
-            " SET \"MRL_LAST_HEARTBEAT\" = " + Instant.now().toEpochMilli() +
-            " WHERE \"MRL_TXN_ID\" = " + txnId +
-            " AND \"MRL_DB_NAME\" = ?" +
-            " AND \"MRL_TBL_NAME\" = ?",
-        new MapSqlParameterSource()
-            .addValue("now", Instant.now().toEpochMilli())
-            .addValue("txnId", txnId)
-            .addValue("dbName", dbName)
-            .addValue("tableNane", tableName),
+            "UPDATE \"MATERIALIZATION_REBUILD_LOCKS\"" +
+                    " SET \"MRL_LAST_HEARTBEAT\" = :lastHeartbeat" +
+                    " WHERE \"MRL_TXN_ID\" = :txnId" +
+                    " AND \"MRL_DB_NAME\" = :dbName" +
+                    " AND \"MRL_TBL_NAME\" = :tblName",
+            new MapSqlParameterSource()
+                    .addValue("lastHeartbeat", Instant.now().toEpochMilli())
+                    .addValue("txnId", txnId)
+                    .addValue("dbName", dbName)
+                    .addValue("tblName", tableName),
         ParameterizedCommand.AT_LEAST_ONE_ROW);
     return result >= 1;
   }
@@ -1063,22 +1084,6 @@ public abstract class TxnHandler implements TxnStore, TxnStore.MutexAPI {
         (ResultSet rs, int rowNum) -> rs.getTimestamp(1));
   }
 
-  private void determineDatabaseProduct(Connection conn) {
-    try {
-      String s = conn.getMetaData().getDatabaseProductName();
-      dbProduct = DatabaseProduct.determineDatabaseProduct(s, conf);
-      if (dbProduct.isUNDEFINED()) {
-        String msg = "Unrecognized database product name <" + s + ">";
-        LOG.error(msg);
-        throw new IllegalStateException(msg);
-      }
-    } catch (SQLException e) {
-      String msg = "Unable to get database product name";
-      LOG.error(msg, e);
-      throw new IllegalStateException(msg, e);
-    }
-  }
-  
   private void initJdbcResource() {
     if (jdbcResource == null) {
       jdbcResource = new MultiDataSourceJdbcResource(dbProduct, conf, sqlGenerator);

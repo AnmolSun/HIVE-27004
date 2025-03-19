@@ -28,6 +28,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -55,6 +56,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.metadata.HiveMetaStoreClientWithLocalCache;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
+import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QTestMiniClusters.FsType;
 import org.apache.hadoop.hive.ql.cache.results.QueryResultsCache;
 import org.apache.hadoop.hive.ql.dataset.QTestDatasetHandler;
@@ -82,6 +84,7 @@ import org.apache.hadoop.hive.ql.qoption.QTestAuthorizerHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestDisabledHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestDatabaseHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestOptionDispatcher;
+import org.apache.hadoop.hive.ql.qoption.QTestQueryHistoryHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestReplaceHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestSysDbHandler;
 import org.apache.hadoop.hive.ql.qoption.QTestTimezoneHandler;
@@ -108,6 +111,9 @@ public class QTestUtil {
   public static String DEBUG_HINT =
       "\nSee ./ql/target/tmp/log/hive.log or ./itests/qtest/target/tmp/log/hive.log, "
           + "or check ./ql/target/surefire-reports or ./itests/qtest/target/surefire-reports/ for specific test cases logs.";
+
+  private static final String QTEST_DRIVER_OPERATION_ID = "qtest_operation_id";
+  private static final String QTEST_DRIVER_USER = "qtest_driver_user";
 
   private String testWarehouse;
   @Deprecated private final String testFiles;
@@ -176,6 +182,13 @@ public class QTestUtil {
     conf.setVar(ConfVars.METASTORE_RAW_STORE_IMPL, "org.apache.hadoop.hive.metastore.VerifyingObjectStore");
 
     miniClusters.initConf(conf);
+
+    // disable query history altogether
+    HiveConf.setBoolVar(conf, HiveConf.ConfVars.HIVE_QUERY_HISTORY_ENABLED, false);
+
+    // make DriverFactory able to create non-null QueryInfo objects
+    conf.set(DriverContext.DEFAULT_USER_NAME_PROP, QTestUtil.QTEST_DRIVER_USER);
+    conf.set(DriverContext.DEFAULT_OPERATION_ID_PROP, QTestUtil.QTEST_DRIVER_OPERATION_ID);
   }
 
   public QTestUtil(QTestArguments testArgs) throws Exception {
@@ -236,6 +249,7 @@ public class QTestUtil {
     dispatcher.register("authorizer", new QTestAuthorizerHandler());
     dispatcher.register("disabled", new QTestDisabledHandler());
     dispatcher.register("database", new QTestDatabaseHandler());
+    dispatcher.register("queryhistory", new QTestQueryHistoryHandler());
 
     this.initScript = scriptsDir + File.separator + testArgs.getInitScript();
     this.cleanupScript = scriptsDir + File.separator + testArgs.getCleanupScript();
@@ -296,7 +310,7 @@ public class QTestUtil {
   }
 
   public void setInputFile(File qf) throws IOException {
-    String query = FileUtils.readFileToString(qf);
+    String query = FileUtils.readFileToString(qf, StandardCharsets.UTF_8);
     inputFile = qf;
     inputContent = query;
     qTestResultProcessor.init(query);
@@ -518,7 +532,7 @@ public class QTestUtil {
   private void cleanupFromFile() throws IOException {
     File cleanupFile = new File(cleanupScript);
     if (cleanupFile.isFile()) {
-      String cleanupCommands = FileUtils.readFileToString(cleanupFile);
+      String cleanupCommands = FileUtils.readFileToString(cleanupFile, StandardCharsets.UTF_8);
       LOG.info("Cleanup (" + cleanupScript + "):\n" + cleanupCommands);
 
       try {
@@ -553,7 +567,7 @@ public class QTestUtil {
       return;
     }
 
-    String initCommands = FileUtils.readFileToString(scriptFile);
+    String initCommands = FileUtils.readFileToString(scriptFile, StandardCharsets.UTF_8);
     LOG.info("Initial setup (" + initScript + "):\n" + initCommands);
 
     try {

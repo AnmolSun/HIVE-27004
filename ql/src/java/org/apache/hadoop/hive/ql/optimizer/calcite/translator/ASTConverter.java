@@ -21,7 +21,6 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -31,6 +30,7 @@ import java.util.TreeMap;
 
 import org.apache.calcite.adapter.druid.DruidQuery;
 import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.rel.RelDistribution;
 import org.apache.calcite.rel.RelFieldCollation;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelVisitor;
@@ -45,6 +45,7 @@ import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.core.TableFunctionScan;
 import org.apache.calcite.rel.core.TableScan;
+import org.apache.calcite.rel.core.TableSpool;
 import org.apache.calcite.rel.core.Union;
 import org.apache.calcite.rel.core.Values;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
@@ -72,11 +73,10 @@ import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.QueryProperties;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
 import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSemanticException;
-import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelOptUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveAggregate;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveComponentAccess;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveGroupingID;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveProject;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveSortExchange;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveValues;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.jdbc.HiveJdbcConverter;
@@ -91,6 +91,7 @@ import org.apache.hadoop.hive.ql.parse.HiveParser;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.ParseDriver;
 import org.apache.hadoop.hive.ql.parse.ParseException;
+import org.apache.hadoop.hive.ql.parse.type.RexNodeExprFactory;
 import org.apache.hadoop.hive.ql.plan.mapper.PlanMapper;
 import org.apache.hadoop.hive.ql.util.DirectionUtils;
 import org.apache.hadoop.hive.ql.util.NullOrdering;
@@ -114,6 +115,7 @@ public class ASTConverter {
   private Filter           having;
   private RelNode          select;
   private RelNode          orderLimit;
+  private List<ASTNode> ctes;
 
   private Schema           schema;
 
@@ -121,18 +123,23 @@ public class ASTConverter {
 
   private PlanMapper planMapper;
 
-  ASTConverter(RelNode root, long dtCounterInitVal, PlanMapper planMapper) {
+  ASTConverter(RelNode root, long dtCounterInitVal, PlanMapper planMapper, List<ASTNode> ctes) {
     this.root = root;
     hiveAST = new HiveAST();
     this.derivedTableCount = dtCounterInitVal;
     this.planMapper = planMapper;
+    this.ctes = ctes;
   }
 
   public static ASTNode convert(final RelNode relNode, List<FieldSchema> resultSchema, boolean alignColumns, PlanMapper planMapper)
       throws CalciteSemanticException {
     RelNode root = PlanModifierForASTConv.convertOpTree(relNode, resultSchema, alignColumns);
-    ASTConverter c = new ASTConverter(root, 0, planMapper);
-    return c.convert();
+    ASTConverter c = new ASTConverter(root, 0, planMapper, new ArrayList<>());
+    ASTNode r = c.convert();
+    for (ASTNode cte : c.ctes) {
+      r.insertChild(0, cte);
+    }
+    return r;
   }
 
   /**
@@ -446,8 +453,17 @@ public class ASTConverter {
   }
 
   private void convertSortToASTNode(HiveSortExchange hiveSortExchange) {
+    Schema sortExchangeSchema = new Schema(hiveSortExchange);
+    if (hiveSortExchange.getDistribution().getType() != RelDistribution.Type.ANY) {
+      ASTNode distributeByAst = ASTBuilder.createAST(HiveParser.TOK_DISTRIBUTEBY, "TOK_DISTRIBUTEBY");
+      for (int i : hiveSortExchange.getDistribution().getKeys()) {
+        distributeByAst.addChild(
+                convertSortKey(hiveSortExchange, sortExchangeSchema, null, sortExchangeSchema.get(i)));
+      }
+      hiveAST.distributeBy = distributeByAst;
+    }
     List<RelFieldCollation> fieldCollations = hiveSortExchange.getCollation().getFieldCollations();
-    convertFieldCollationsToASTNode(hiveSortExchange, new Schema(hiveSortExchange), fieldCollations,
+    convertFieldCollationsToASTNode(hiveSortExchange, sortExchangeSchema, fieldCollations,
             null, HiveParser.TOK_SORTBY, "TOK_SORTBY");
   }
 
@@ -461,8 +477,6 @@ public class ASTConverter {
     // 1 Add order/sort by token
     ASTNode orderAst = ASTBuilder.createAST(astToken, astText);
 
-    RexNode obExpr;
-    ASTNode astCol;
     for (RelFieldCollation c : fieldCollations) {
 
       // 2 Add Direction token
@@ -490,27 +504,31 @@ public class ASTConverter {
 
       // 3 Convert OB expr (OB Expr is usually an input ref except for top
       // level OB; top level OB will have RexCall kept in a map.)
-      obExpr = null;
+      RexNode obExpr = null;
       if (obRefToCallMap != null) {
         obExpr = obRefToCallMap.get(c.getFieldIndex());
       }
-
-      if (obExpr != null) {
-        astCol = obExpr.accept(new RexVisitor(schema, false, node.getCluster().getRexBuilder()));
-      } else {
-        ColumnInfo cI = schema.get(c.getFieldIndex());
-        /*
-         * The RowResolver setup for Select drops Table associations. So
-         * setup ASTNode on unqualified name.
-         */
-        astCol = ASTBuilder.unqualifiedName(cI.column);
-      }
+      ASTNode astCol = convertSortKey(node, schema, obExpr, schema.get(c.getFieldIndex()));
 
       // 4 buildup the ob expr AST
       nullDirectionAST.addChild(astCol);
       orderAst.addChild(directionAST);
     }
     hiveAST.order = orderAst;
+  }
+
+  private ASTNode convertSortKey(RelNode node, Schema schema, RexNode obExpr, ColumnInfo columnInfo) {
+    ASTNode astCol;
+    if (obExpr != null) {
+      astCol = obExpr.accept(new RexVisitor(schema, false, node.getCluster().getRexBuilder()));
+    } else {
+      /*
+       * The RowResolver setup for Select drops Table associations. So
+       * setup ASTNode on unqualified name.
+       */
+      astCol = ASTBuilder.unqualifiedName(columnInfo.column);
+    }
+    return astCol;
   }
 
   private Schema getRowSchema(String tblAlias) {
@@ -571,10 +589,10 @@ public class ASTConverter {
       }
     } else if (r instanceof Union) {
       Union u = ((Union) r);
-      ASTNode left = new ASTConverter(((Union) r).getInput(0), this.derivedTableCount, planMapper).convert();
+      ASTNode left = new ASTConverter(((Union) r).getInput(0), this.derivedTableCount, planMapper, this.ctes).convert();
       for (int ind = 1; ind < u.getInputs().size(); ind++) {
         left = getUnionAllAST(left, new ASTConverter(((Union) r).getInput(ind),
-            this.derivedTableCount, planMapper).convert());
+            this.derivedTableCount, planMapper, this.ctes).convert());
         String sqAlias = nextAlias();
         ast = ASTBuilder.subQuery(left, sqAlias);
         s = new Schema((Union) r, sqAlias);
@@ -590,8 +608,17 @@ public class ASTConverter {
 
       ast = createASTLateralView(tfs, s, tableFunctionSource, sqAlias);
 
+    } else if (r instanceof TableSpool) {
+      TableSpool spool = (TableSpool) r;
+      ASTConverter cteConverter =
+          new ASTConverter(spool.getInput(), this.derivedTableCount, planMapper, Collections.emptyList());
+      String cteName = Iterables.getLast(spool.getTable().getQualifiedName());
+      ASTNode cte = ASTBuilder.createAST(HiveParser.TOK_CTE, "TOK_CTE");
+      cte.addChild(ASTBuilder.subQuery(cteConverter.convert(), cteName));
+      ctes.add(cte);
+      return new QueryBlockInfo(cteConverter.getRowSchema(cteName), ASTBuilder.cte(cteName, cteName));
     } else {
-      ASTConverter src = new ASTConverter(r, this.derivedTableCount, planMapper);
+      ASTConverter src = new ASTConverter(r, this.derivedTableCount, planMapper, this.ctes);
       ASTNode srcAST = src.convert();
       String sqAlias = nextAlias();
       s = src.getRowSchema(sqAlias);
@@ -756,6 +783,8 @@ public class ASTConverter {
       } else if (node instanceof Join) {
         ASTConverter.this.from = node;
       } else if (node instanceof Union) {
+        ASTConverter.this.from = node;
+      } else if (node instanceof TableSpool) {
         ASTConverter.this.from = node;
       } else if (node instanceof Aggregate) {
         ASTConverter.this.groupBy = (Aggregate) node;
@@ -1060,6 +1089,9 @@ public class ASTConverter {
         }
         // fall-through
       default:
+        if (op.equals(HiveComponentAccess.COMPONENT_ACCESS)) {
+          return call.operands.get(0).accept(this);
+        }
         for (RexNode operand : call.operands) {
           astNodeLst.add(operand.accept(this));
         }
@@ -1247,6 +1279,7 @@ public class ASTConverter {
     ASTNode groupBy;
     ASTNode having;
     ASTNode select;
+    ASTNode distributeBy;
     ASTNode order;
     ASTNode limit;
 
@@ -1256,7 +1289,7 @@ public class ASTConverter {
           .add(from)
           .add(
               ASTBuilder.construct(HiveParser.TOK_INSERT, "TOK_INSERT").add(ASTBuilder.destNode())
-                  .add(select).add(where).add(groupBy).add(having).add(order).add(limit));
+                  .add(select).add(where).add(groupBy).add(having).add(distributeBy).add(order).add(limit));
       return b.node();
     }
   }

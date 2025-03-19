@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.Stack;
 
@@ -56,6 +57,7 @@ import org.apache.hadoop.hive.ql.parse.GenTezUtils;
 import org.apache.hadoop.hive.ql.parse.OptimizeTezProcContext;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.plan.CustomBucketFunction;
 import org.apache.hadoop.hive.ql.plan.ColStatistics;
 import org.apache.hadoop.hive.ql.plan.CommonMergeJoinDesc;
 import org.apache.hadoop.hive.ql.plan.DummyStoreDesc;
@@ -68,6 +70,7 @@ import org.apache.hadoop.hive.ql.plan.JoinDesc;
 import org.apache.hadoop.hive.ql.plan.MapJoinDesc;
 import org.apache.hadoop.hive.ql.plan.OpTraits;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
+import org.apache.hadoop.hive.ql.plan.ReduceSinkDesc;
 import org.apache.hadoop.hive.ql.plan.Statistics;
 import org.apache.hadoop.hive.ql.stats.StatsUtils;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
@@ -210,8 +213,8 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     }
     // map join operator by default has no bucket cols and num of reduce sinks
     // reduced by 1
-    mapJoinOp.setOpTraits(new OpTraits(null, -1, null,
-        joinOp.getOpTraits().getNumReduceSinks()));
+    mapJoinOp.setOpTraits(new OpTraits(null, null, -1,
+        null, joinOp.getOpTraits().getNumReduceSinks()));
     preserveOperatorInfos(mapJoinOp, joinOp, context);
     // propagate this change till the next RS
     for (Operator<? extends OperatorDesc> childOp : mapJoinOp.getChildOperators()) {
@@ -544,8 +547,9 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
             joinOp.getSchema());
     context.parseContext.getContext().getPlanMapper().link(joinOp, mergeJoinOp);
     int numReduceSinks = joinOp.getOpTraits().getNumReduceSinks();
-    OpTraits opTraits = new OpTraits(joinOp.getOpTraits().getBucketColNames(), numBuckets,
-        joinOp.getOpTraits().getSortCols(), numReduceSinks);
+    OpTraits opTraits = new OpTraits(joinOp.getOpTraits().getBucketColNames(),
+        joinOp.getOpTraits().getCustomBucketFunctions(), numBuckets, joinOp.getOpTraits().getSortCols(),
+        numReduceSinks);
     mergeJoinOp.setOpTraits(opTraits);
     mergeJoinOp.getConf().setBucketingVersion(joinOp.getConf().getBucketingVersion());
     preserveOperatorInfos(mergeJoinOp, joinOp, context);
@@ -624,8 +628,9 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     if (currentOp instanceof ReduceSinkOperator) {
       return;
     }
-    currentOp.setOpTraits(new OpTraits(opTraits.getBucketColNames(),
-        opTraits.getNumBuckets(), opTraits.getSortCols(), opTraits.getNumReduceSinks()));
+    currentOp.setOpTraits(new OpTraits(opTraits.getBucketColNames(), opTraits.getCustomBucketFunctions(),
+        opTraits.getNumBuckets(), opTraits.getSortCols(),
+        opTraits.getNumReduceSinks()));
     for (Operator<? extends OperatorDesc> childOp : currentOp.getChildOperators()) {
       if ((childOp instanceof ReduceSinkOperator) || (childOp instanceof GroupByOperator)) {
         break;
@@ -656,6 +661,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     boolean updatePartitionCols = false;
     List<Integer> positions = new ArrayList<>();
 
+    CustomBucketFunction bucketFunction = opTraits.getCustomBucketFunctions().get(0);
     if (listBucketCols.get(0).size() != bigTablePartitionCols.size()) {
       updatePartitionCols = true;
       // Prepare updated partition columns for small table(s).
@@ -663,14 +669,28 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
 
       int bigTableExprPos = 0;
       Map<String, ExprNodeDesc> colExprMap = bigTableRS.getColumnExprMap();
+      final boolean[] retainedColumns = new boolean[listBucketCols.get(0).size()];
       for (ExprNodeDesc bigTableExpr : bigTablePartitionCols) {
         // It is guaranteed there is only 1 list within listBucketCols.
-        for (String colName : listBucketCols.get(0)) {
+        for (int i = 0; i < listBucketCols.get(0).size(); i++) {
+          final String colName = listBucketCols.get(0).get(i);
           if (colExprMap.get(colName).isSame(bigTableExpr)) {
             positions.add(bigTableExprPos);
+            retainedColumns[i] = true;
           }
         }
         bigTableExprPos = bigTableExprPos + 1;
+      }
+
+      Preconditions.checkState(opTraits.getCustomBucketFunctions().size() == 1);
+      if (opTraits.getCustomBucketFunctions().get(0) != null) {
+        final Optional<CustomBucketFunction> selected =
+            opTraits.getCustomBucketFunctions().get(0).select(retainedColumns);
+        if (!selected.isPresent()) {
+          LOG.info("{} can't keep itself only with {}", opTraits.getCustomBucketFunctions().get(0), retainedColumns);
+          return false;
+        }
+        bucketFunction = selected.get();
       }
     }
 
@@ -683,7 +703,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     joinDesc.setBucketMapJoin(true);
 
     // we can set the traits for this join operator
-    opTraits = new OpTraits(joinOp.getOpTraits().getBucketColNames(),
+    opTraits = new OpTraits(joinOp.getOpTraits().getBucketColNames(), joinOp.getOpTraits().getCustomBucketFunctions(),
         tezBucketJoinProcCtx.getNumBuckets(), null, joinOp.getOpTraits().getNumReduceSinks());
     mapJoinOp.setOpTraits(opTraits);
     preserveOperatorInfos(mapJoinOp, joinOp, context);
@@ -698,11 +718,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     if (updatePartitionCols) {
       // use the positions to only pick the partitionCols which are required
       // on the small table side.
-      for (Operator<?> op : mapJoinOp.getParentOperators()) {
-        if (!(op instanceof ReduceSinkOperator)) {
-          continue;
-        }
-
+      mapJoinOp.getParentOperators().stream().filter(ReduceSinkOperator.class::isInstance).forEach(op -> {
         ReduceSinkOperator rsOp = (ReduceSinkOperator) op;
         List<ExprNodeDesc> newPartitionCols = new ArrayList<>();
         List<ExprNodeDesc> partitionCols = rsOp.getConf().getPartitionCols();
@@ -710,7 +726,21 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
           newPartitionCols.add(partitionCols.get(position));
         }
         rsOp.getConf().setPartitionCols(newPartitionCols);
+      });
+    }
+
+    if (bucketFunction != null) {
+      final Operator<?> bigTableOp = mapJoinOp.getParentOperators().get(bigTablePosition);
+      for (TableScanOperator tso : OperatorUtils.findOperatorsUpstream(bigTableOp, TableScanOperator.class)) {
+        tso.getConf().setGroupingPartitionColumns(bucketFunction.getSourceColumnNames());
+        tso.getConf().setGroupingNumBuckets(bucketFunction.getNumBuckets());
       }
+
+      final CustomBucketFunction finalBucketFunction = bucketFunction;
+      mapJoinOp.getParentOperators().stream().filter(ReduceSinkOperator.class::isInstance).forEach(op -> {
+        ReduceSinkOperator rsOp = (ReduceSinkOperator) op;
+        rsOp.getConf().setCustomPartitionFunction(finalBucketFunction);
+      });
     }
 
     // Update the memory monitor info for LLAP.
@@ -799,6 +829,11 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
         return false;
       }
       ReduceSinkOperator rsOp = (ReduceSinkOperator) parentOp;
+      if (rsOp.getOpTraits().hasCustomBucketFunction()) {
+        LOG.info("We don't support SMB with custom bucket functions yet");
+        return false;
+      }
+
       List<ExprNodeDesc> keyCols = rsOp.getConf().getKeyCols();
 
       // For SMB, the key column(s) in RS should be same as bucket column(s) and sort column(s)`
@@ -849,14 +884,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     for (Operator<? extends OperatorDesc> parentOp : joinOp.getParentOperators()) {
       // Check if the parent is coming from a table scan, if so, what is the version of it.
       assert parentOp.getParentOperators() != null && parentOp.getParentOperators().size() == 1;
-      Operator<?> op = parentOp;
-      while (op != null && !(op instanceof TableScanOperator || op instanceof ReduceSinkOperator
-          || op instanceof CommonJoinOperator)) {
-        // If op has parents it is guaranteed to be 1.
-        List<Operator<?>> parents = op.getParentOperators();
-        Preconditions.checkState(parents.size() == 0 || parents.size() == 1);
-        op = parents.size() == 1 ? parents.get(0) : null;
-      }
+      Operator<?> op = OperatorUtils.findSourceOperatorInSameBranch(parentOp);
 
       if (op instanceof TableScanOperator) {
         int localVersion = ((TableScanOperator) op).getConf().getTableMetadata().getBucketingVersion();
@@ -865,6 +893,28 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
         } else if (bucketingVersion != localVersion) {
           // versions dont match, return false.
           LOG.debug("SMB Join can't be performed due to bucketing version mismatch");
+          return false;
+        }
+      }
+    }
+
+    /* As SMB replaces last RS op from the joining branches and the JOIN op with MERGEJOIN, we need to ensure
+     * the RS before these RS, in both branches, are partitioning using same hash generator. It
+     * differs depending on ReducerTraits.UNIFORM i.e. ReduceSinkOperator#computeMurmurHash or
+     * ReduceSinkOperator#computeHashCode, leading to different code for same value. Skip SMB join in such cases.
+     */
+    Boolean prevRsHasUniformTrait = null;
+    for (Operator<? extends OperatorDesc> parentOp : joinOp.getParentOperators()) {
+      // Assertion of mandatory single parent is already being done in bucket version check earlier
+      Operator<?> op = OperatorUtils.findSourceOperatorInSameBranch(parentOp.getParentOperators().get(0));
+
+      if (op instanceof ReduceSinkOperator) {
+        boolean hasUniformTrait = ((ReduceSinkOperator) op).getConf()
+                .getReducerTraits().contains(ReduceSinkDesc.ReducerTraits.UNIFORM);
+        if (prevRsHasUniformTrait == null) {
+          prevRsHasUniformTrait = hasUniformTrait;
+        } else if (prevRsHasUniformTrait != hasUniformTrait) {
+          LOG.debug("SMB Join can't be performed due to partition hash generator mismatch across join branches");
           return false;
         }
       }
@@ -889,8 +939,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
    * can create a bucket map join eliminating the reduce sink.
    */
   private boolean checkConvertJoinBucketMapJoin(JoinOperator joinOp,
-      int bigTablePosition, TezBucketJoinProcCtx tezBucketJoinProcCtx)
-          throws SemanticException {
+      int bigTablePosition, TezBucketJoinProcCtx tezBucketJoinProcCtx) {
     // bail on mux-operator because mux operator masks the emit keys of the
     // constituent reduce sinks
     if (!(joinOp.getParentOperators().get(0) instanceof ReduceSinkOperator)) {
@@ -903,9 +952,10 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     List<List<String>> parentColNames = rs.getOpTraits().getBucketColNames();
     Operator<? extends OperatorDesc> parentOfParent = rs.getParentOperators().get(0);
     List<List<String>> grandParentColNames = parentOfParent.getOpTraits().getBucketColNames();
-    int numBuckets = parentOfParent.getOpTraits().getNumBuckets();
-    // all keys matched.
-    if (!checkColEquality(grandParentColNames, parentColNames, rs.getColumnExprMap(), true)) {
+    Preconditions.checkState(rs.getOpTraits().getCustomBucketFunctions() == null
+        || rs.getOpTraits().getCustomBucketFunctions().size() == 1);
+    final boolean hasCustomBucketFunction = rs.getOpTraits().hasCustomBucketFunction();
+    if (!checkColEquality(grandParentColNames, parentColNames, rs.getColumnExprMap(), !hasCustomBucketFunction)) {
       LOG.info("No info available to check for bucket map join. Cannot convert");
       return false;
     }
@@ -927,6 +977,9 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
      * this is the case when the big table is a sub-query and is probably already bucketed by the
      * join column in say a group by operation
      */
+    final CustomBucketFunction parentBucketFunction = rs.getOpTraits().getCustomBucketFunctions().get(0);
+    int numBuckets = parentBucketFunction != null ? parentBucketFunction.getNumBuckets()
+        : parentOfParent.getOpTraits().getNumBuckets();
     if (numBuckets < 0) {
       numBuckets = rs.getConf().getNumReducers();
     }
@@ -1505,15 +1558,21 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
     int estimatedBuckets = -1;
 
     for (Operator<? extends OperatorDesc>parentOp : joinOp.getParentOperators()) {
-      if (parentOp.getOpTraits().getNumBuckets() > 0) {
-        numBuckets = (numBuckets < parentOp.getOpTraits().getNumBuckets()) ?
-            parentOp.getOpTraits().getNumBuckets() : numBuckets;
+      if (!(parentOp instanceof ReduceSinkOperator)) {
+        continue;
       }
 
-      if (!useOpTraits && parentOp instanceof ReduceSinkOperator) {
+      final OpTraits parentOpTraits = parentOp.getOpTraits();
+      numBuckets = Math.max(numBuckets, parentOpTraits.getNumBuckets());
+
+      if (parentOpTraits.hasCustomBucketFunction()) {
+        Preconditions.checkState(parentOpTraits.getCustomBucketFunctions().size() == 1);
+        numBuckets = Math.max(numBuckets, parentOpTraits.getCustomBucketFunctions().get(0).getNumBuckets());
+      }
+
+      if (!useOpTraits) {
         ReduceSinkOperator rs = (ReduceSinkOperator) parentOp;
-        estimatedBuckets = (estimatedBuckets < rs.getConf().getNumReducers()) ?
-            rs.getConf().getNumReducers() : estimatedBuckets;
+        estimatedBuckets = Math.max(estimatedBuckets, rs.getConf().getNumReducers());
       }
     }
 
@@ -1567,6 +1626,7 @@ public class ConvertJoinMapJoin implements SemanticNodeProcessor {
         // sortCols: This is an unsorted join - no sort cols
         OpTraits opTraits = new OpTraits(
             joinOp.getOpTraits().getBucketColNames(),
+            joinOp.getOpTraits().getCustomBucketFunctions(),
             numReducers,
             null,
             joinOp.getOpTraits().getNumReduceSinks());

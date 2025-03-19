@@ -63,7 +63,8 @@ import org.apache.hadoop.hive.metastore.api.AbortCompactResponse;
 import org.apache.hadoop.hive.metastore.api.AbortCompactionRequest;
 import org.apache.hadoop.hive.metastore.api.AbortCompactionResponseElement;
 import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
-import org.apache.hadoop.hive.metastore.txn.AcidHouseKeeperService;
+import org.apache.hadoop.hive.metastore.txn.service.CompactionHouseKeeperService;
+import org.apache.hadoop.hive.metastore.txn.service.AcidHouseKeeperService;
 import org.apache.hadoop.hive.metastore.utils.TestTxnDbUtil;
 import org.apache.hadoop.hive.metastore.txn.TxnStore;
 import org.apache.hadoop.hive.ql.ddl.DDLTask;
@@ -74,7 +75,7 @@ import org.apache.hadoop.hive.ql.io.BucketCodec;
 import org.apache.hadoop.hive.ql.lockmgr.HiveTxnManager;
 import org.apache.hadoop.hive.ql.lockmgr.TxnManagerFactory;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorException;
-import org.apache.hadoop.hive.metastore.txn.AcidOpenTxnsCounterService;
+import org.apache.hadoop.hive.metastore.txn.service.AcidOpenTxnsCounterService;
 import org.apache.hadoop.hive.ql.scheduled.ScheduledQueryExecutionContext;
 import org.apache.hadoop.hive.ql.scheduled.ScheduledQueryExecutionService;
 import org.apache.hadoop.hive.ql.schq.MockScheduledQueryService;
@@ -204,7 +205,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
    * @throws Exception
    */
   private void testOrcPPD(boolean enablePPD) throws Exception {
-    boolean originalPpd = hiveConf.getBoolVar(HiveConf.ConfVars.HIVE_OPT_INDEX_FILTER);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_EXPLAIN_USER, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPT_PPD, enablePPD);//enables PPD
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPT_INDEX_FILTER, enablePPD);//enables ORC PPD
     //create delta_0001_0001_0000 (should push predicate here)
     runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) " + makeValuesClause(new int[][]{{1, 2}, {3, 4}}));
@@ -263,7 +265,6 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     List<String> rs1 = runStatementOnDriver(query);
     int [][] resultData = new int[][] {{3, 5}, {5, 6}, {9, 10}};
     Assert.assertEquals("Update failed", stringifyValues(resultData), rs1);
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_OPT_INDEX_FILTER, originalPpd);
   }
 
   static void assertExplainHasString(String string, List<String> queryPlan, String errMsg) {
@@ -364,13 +365,13 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
      * Note: order of rows in a file ends up being the reverse of order in values clause (why?!)
      */
     String[][] expected = {
-        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":2}\t0\t13",  "bucket_00001"},
+        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":3}\t0\t13",  "bucket_00001"},
         {"{\"writeid\":10000001,\"bucketid\":536936448,\"rowid\":0}\t0\t15", "bucket_00001"},
         {"{\"writeid\":10000003,\"bucketid\":536936448,\"rowid\":0}\t0\t17", "bucket_00001"},
         {"{\"writeid\":10000002,\"bucketid\":536936449,\"rowid\":0}\t0\t120", "bucket_00001"},
-        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":1}\t1\t2",   "bucket_00001"},
-        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":5}\t1\t4",   "bucket_00001"},
-        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":4}\t1\t5",   "bucket_00001"},
+        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":0}\t1\t2",   "bucket_00001"},
+        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":4}\t1\t4",   "bucket_00001"},
+        {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":5}\t1\t5",   "bucket_00001"},
         {"{\"writeid\":0,\"bucketid\":536936448,\"rowid\":6}\t1\t6",   "bucket_00001"},
         {"{\"writeid\":10000001,\"bucketid\":536936448,\"rowid\":1}\t1\t16", "bucket_00001"}
     };
@@ -425,11 +426,9 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(1,2)");
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    // There should be 2 original bucket files in the location (000000_0 and 000001_0)
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    // There should be 1 original bucket file in the location (000001_0)
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     List<String> rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     int [][] resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -442,10 +441,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Everything should be same as before
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -457,9 +454,9 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(3,4)");
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    // There should be 2 original bucket files (000000_0 and 000001_0), plus a new delta directory.
+    // There should be 1 original bucket file (000001_0), plus a new delta directory.
     // The delta directory should also have only 1 bucket file (bucket_00001)
-    Assert.assertEquals(3, status.length);
+    Assert.assertEquals(2, status.length);
     boolean sawNewDelta = false;
     for (int i = 0; i < status.length; i++) {
       if (status[i].getPath().getName().matches("delta_.*")) {
@@ -483,10 +480,10 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("alter table "+ Table.NONACIDORCTBL + " compact 'MAJOR'");
     runWorker(hiveConf);
     // There should be 1 new directory: base_xxxxxxx.
-    // Original bucket files and delta directory should stay until Cleaner kicks in.
+    // Original bucket file and delta directory should stay until Cleaner kicks in.
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    Assert.assertEquals(4, status.length);
+    Assert.assertEquals(3, status.length);
     boolean sawNewBase = false;
     for (int i = 0; i < status.length; i++) {
       if (status[i].getPath().getName().matches("base_.*")) {
@@ -516,8 +513,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Before Cleaner, there should be 5 items:
-    // 2 original files, 1 original directory, 1 base directory and 1 delta directory
-    Assert.assertEquals(5, status.length);
+    // 1 original file, 1 original directory, 1 base directory and 1 delta directory
+    Assert.assertEquals(4, status.length);
     runCleaner(hiveConf);
     // There should be only 1 directory left: base_xxxxxxx.
     // Original bucket files and delta directory should have been cleaned up.
@@ -555,11 +552,9 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(1,2)");
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    // There should be 2 original bucket files in the location (000000_0 and 000001_0)
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    // There should be 1 original bucket file in the location (000001_0)
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     List<String> rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     int [][] resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -572,10 +567,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Everything should be same as before
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -587,12 +580,12 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("update " + Table.NONACIDORCTBL + " set b=3 where a=1");
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    // There should be 2 original bucket files (000000_0 and 000001_0), plus one delta directory
+    // There should be 1 original bucket file (000001_0), plus one delta directory
     // and one delete_delta directory. When split-update is enabled, an update event is split into
     // a combination of delete and insert, that generates the delete_delta directory.
     // The delta directory should also have 2 bucket files (bucket_00000 and bucket_00001)
     // and so should the delete_delta directory.
-    Assert.assertEquals(4, status.length);
+    Assert.assertEquals(3, status.length);
     boolean sawNewDelta = false;
     boolean sawNewDeleteDelta = false;
     for (int i = 0; i < status.length; i++) {
@@ -623,10 +616,10 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("alter table "+ Table.NONACIDORCTBL + " compact 'MAJOR'");
     runWorker(hiveConf);
     // There should be 1 new directory: base_0000001.
-    // Original bucket files and delta directory should stay until Cleaner kicks in.
+    // Original bucket file and delta directory should stay until Cleaner kicks in.
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    Assert.assertEquals(5, status.length);
+    Assert.assertEquals(4, status.length);
     boolean sawNewBase = false;
     for (int i = 0; i < status.length; i++) {
       if (status[i].getPath().getName().matches("base_.*")) {
@@ -648,8 +641,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Before Cleaner, there should be 5 items:
-    // 2 original files, 1 delta directory, 1 delete_delta directory and 1 base directory
-    Assert.assertEquals(5, status.length);
+    // 1 original file, 1 delta directory, 1 delete_delta directory and 1 base directory
+    Assert.assertEquals(4, status.length);
     runCleaner(hiveConf);
     // There should be only 1 directory left: base_0000001.
     // Original bucket files, delta directory and delete_delta should have been cleaned up.
@@ -687,11 +680,9 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDORCTBL + "(a,b) values(1,2)");
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    // There should be 2 original bucket files in the location (000000_0 and 000001_0)
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    // There should be 1 original bucket file in the location (000001_0)
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     List<String> rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     int [][] resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -704,10 +695,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Everything should be same as before
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    Assert.assertEquals(1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     rs = runStatementOnDriver("select a,b from " + Table.NONACIDORCTBL);
     resultData = new int[][] {{1, 2}};
     Assert.assertEquals(stringifyValues(resultData), rs);
@@ -719,16 +708,16 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("alter table "+ Table.NONACIDORCTBL + " compact 'MAJOR'");
     runWorker(hiveConf);
     // There should be 1 new directory: base_-9223372036854775808
-    // Original bucket files should stay until Cleaner kicks in.
+    // Original bucket file should stay until Cleaner kicks in.
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
-    Assert.assertEquals(3, status.length);
+    Assert.assertEquals(2, status.length);
     boolean sawNewBase = false;
     for (int i = 0; i < status.length; i++) {
       if (status[i].getPath().getName().matches("base_.*")) {
-        //should be base_-9223372036854775808_v0000023 but 23 is a txn id not write id so it makes
+        //should be base_-9223372036854775808_v0000008 but 8 is a txn id not write id so it makes
         //the tests fragile
-        Assert.assertTrue(status[i].getPath().getName().startsWith("base_-9223372036854775808_v0000023"));
+        Assert.assertTrue(status[i].getPath().getName().startsWith("base_-9223372036854775808_v0000008"));
         sawNewBase = true;
         FileStatus[] buckets = fs.listStatus(status[i].getPath(), FileUtils.HIDDEN_FILES_PATH_FILTER);
         Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
@@ -749,10 +738,10 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     Arrays.sort(status);  // make sure delta_0000001_0000001_0000 appears before delta_0000002_0000002_0000
-    // There should be 2 original bucket files (000000_0 and 000001_0), a base directory,
+    // There should be 1 original bucket file (000001_0), a base directory,
     // plus two new delta directories and one delete_delta directory that would be created due to
     // the update statement (remember split-update U=D+I)!
-    Assert.assertEquals(6, status.length);
+    Assert.assertEquals(5, status.length);
     int numDelta = 0;
     int numDeleteDelta = 0;
     sawNewBase = false;
@@ -780,7 +769,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
           Assert.assertEquals("bucket_00001_0", buckets[0].getPath().getName());
         }
       } else if (status[i].getPath().getName().matches("base_.*")) {
-        Assert.assertTrue("base_-9223372036854775808", status[i].getPath().getName().startsWith("base_-9223372036854775808_v0000023"));//_v0000023
+        Assert.assertTrue("base_-9223372036854775808", status[i].getPath().getName().startsWith("base_-9223372036854775808_v0000008"));//_v0000008
         sawNewBase = true;
         FileStatus[] buckets = fs.listStatus(status[i].getPath(), FileUtils.HIDDEN_FILES_PATH_FILTER);
         Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
@@ -803,13 +792,13 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     // 5. Perform another major compaction
     runStatementOnDriver("alter table "+ Table.NONACIDORCTBL + " compact 'MAJOR'");
     runWorker(hiveConf);
-    // There should be 1 new base directory: base_0000001
-    // Original bucket files, delta directories, delete_delta directories and the
+    // There should be 1 new base directory: base_00000016
+    // Original bucket file, delta directories, delete_delta directories and the
     // previous base directory should stay until Cleaner kicks in.
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     Arrays.sort(status);
-    Assert.assertEquals(7, status.length);
+    Assert.assertEquals(6, status.length);
     int numBase = 0;
     for (int i = 0; i < status.length; i++) {
       if (status[i].getPath().getName().matches("base_.*")) {
@@ -817,12 +806,12 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
         FileStatus[] buckets = fs.listStatus(status[i].getPath(), FileUtils.HIDDEN_FILES_PATH_FILTER);
         Arrays.sort(buckets);
         if (numBase == 1) {
-          Assert.assertEquals("base_-9223372036854775808_v0000023", status[i].getPath().getName());
+          Assert.assertEquals("base_-9223372036854775808_v0000008", status[i].getPath().getName());
           Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         } else if (numBase == 2) {
           // The new base dir now has two bucket files, since the delta dir has two bucket files
-          Assert.assertEquals("base_10000002_v0000031", status[i].getPath().getName());
+          Assert.assertEquals("base_10000002_v0000016", status[i].getPath().getName());
           Assert.assertEquals(2, buckets.length);
           Assert.assertEquals("bucket_00000", buckets[0].getPath().getName());
         }
@@ -840,16 +829,16 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     // Before Cleaner, there should be 6 items:
-    // 2 original files, 2 delta directories, 1 delete_delta directory and 2 base directories
-    Assert.assertEquals(7, status.length);
+    // 1 original file, 2 delta directories, 1 delete_delta directory and 2 base directories
+    Assert.assertEquals(6, status.length);
     runCleaner(hiveConf);
     runCleaner(hiveConf);
-    // There should be only 1 directory left: base_0000001.
+    // There should be only 1 directory left: base_00000016
     // Original bucket files, delta directories and previous base directory should have been cleaned up.
     status = fs.listStatus(new Path(getWarehouseDir() + "/" +
       (Table.NONACIDORCTBL).toString().toLowerCase()), FileUtils.HIDDEN_FILES_PATH_FILTER);
     Assert.assertEquals(1, status.length);
-    Assert.assertEquals("base_10000002_v0000031", status[0].getPath().getName());
+    Assert.assertEquals("base_10000002_v0000016", status[0].getPath().getName());
     FileStatus[] buckets = fs.listStatus(status[0].getPath(), FileUtils.HIDDEN_FILES_PATH_FILTER);
     Arrays.sort(buckets);
     Assert.assertEquals(2, buckets.length);
@@ -882,11 +871,9 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDNESTEDPART + " partition(p='p1',q='q1') " + makeValuesClause(targetVals));
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
 
-    // There should be 2 original bucket files in the location (000000_0 and 000001_0)
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    // There should be 1 original bucket file in the location (000001_0)
+    Assert.assertEquals(BUCKET_COUNT - 1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     List<String> rs = runStatementOnDriver("select a,b from " + Table.NONACIDNESTEDPART);
     Assert.assertEquals(stringifyValues(targetVals), rs);
     rs = runStatementOnDriver("select count(*) from " + Table.NONACIDNESTEDPART);
@@ -897,10 +884,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("alter table " + Table.NONACIDNESTEDPART + " SET TBLPROPERTIES ('transactional'='true')");
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
     // Everything should be same as before
-    Assert.assertEquals(BUCKET_COUNT, status.length);
-    for (int i = 0; i < status.length; i++) {
-      Assert.assertTrue(status[i].getPath().getName().matches("00000[01]_0"));
-    }
+    Assert.assertEquals(BUCKET_COUNT - 1, status.length);
+    Assert.assertTrue(status[0].getPath().getName().matches("000001_0"));
     rs = runStatementOnDriver("select a,b from " + Table.NONACIDNESTEDPART);
     Assert.assertEquals(stringifyValues(targetVals), rs);
     rs = runStatementOnDriver("select count(*) from " + Table.NONACIDNESTEDPART);
@@ -913,14 +898,12 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     // There should be 1 new directory: base_-9223372036854775808
     // Original bucket files should stay until Cleaner kicks in.
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
-    Assert.assertEquals(3, status.length);
+    Assert.assertEquals(2, status.length);
     boolean sawNewBase = false;
     for (int i = 0; i < status.length; i++) {
       Path parent = status[i].getPath().getParent();
       if (parent.getName().matches("base_.*")) {
-        //should be base_-9223372036854775808_v0000023 but 23 is a txn id not write id so it makes
-        //the tests fragile
-        Assert.assertTrue(parent.getName().startsWith("base_-9223372036854775808_v0000023"));
+        Assert.assertTrue(parent.getName().startsWith("base_-9223372036854775808_v0000008"));
         sawNewBase = true;
         FileStatus[] buckets = fs.listStatus(parent, FileUtils.HIDDEN_FILES_PATH_FILTER);
         Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
@@ -939,10 +922,10 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     runStatementOnDriver("insert into " + Table.NONACIDNESTEDPART + "(a,b,p,q) values(3,4,'p1','q1')");
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
     Arrays.sort(status);  // make sure delta_0000001_0000001_0000 appears before delta_0000002_0000002_0000
-    // There should be 2 original bucket files (000000_0 and 000001_0), a base directory,
+    // There should be 1 original bucket file (000001_0), a base directory,
     // plus two new delta directories and one delete_delta directory that would be created due to
     // the update statement (remember split-update U=D+I)!
-    Assert.assertEquals(6, status.length);
+    Assert.assertEquals(5, status.length);
     int numDelta = 0;
     int numDeleteDelta = 0;
     sawNewBase = false;
@@ -971,7 +954,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
           Assert.assertEquals("bucket_00001_0", buckets[0].getPath().getName());
         }
       } else if (parent.getName().matches("base_.*")) {
-        Assert.assertTrue("base_-9223372036854775808", parent.getName().startsWith("base_-9223372036854775808_v0000023"));//_v0000023
+        Assert.assertTrue("base_-9223372036854775808", parent.getName().startsWith("base_-9223372036854775808_v0000008"));//_v0000009
         sawNewBase = true;
         FileStatus[] buckets = fs.listStatus(parent, FileUtils.HIDDEN_FILES_PATH_FILTER);
         Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
@@ -992,12 +975,12 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     // 5. Perform another major compaction
     runStatementOnDriver("alter table "+ Table.NONACIDNESTEDPART + " partition(p='p1',q='q1') compact 'MAJOR'");
     runWorker(hiveConf);
-    // There should be 1 new base directory: base_0000001
-    // Original bucket files, delta directories, delete_delta directories and the
+    // There should be 1 new base directory: base_00000016
+    // Original bucket file, delta directories, delete_delta directories and the
     // previous base directory should stay until Cleaner kicks in.
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
     Arrays.sort(status);
-    Assert.assertEquals(8, status.length);
+    Assert.assertEquals(7, status.length);
     int numBase = 0;
     Set<Path> bases = new HashSet<>();
     for (int i = 0; i < status.length; i++) {
@@ -1008,12 +991,12 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
         FileStatus[] buckets = fs.listStatus(parent, FileUtils.HIDDEN_FILES_PATH_FILTER);
         Arrays.sort(buckets);
         if (numBase == 1) {
-          Assert.assertEquals("base_-9223372036854775808_v0000023", parent.getName());
+          Assert.assertEquals("base_-9223372036854775808_v0000008", parent.getName());
           Assert.assertEquals(BUCKET_COUNT - 1, buckets.length);
           Assert.assertEquals("bucket_00001", buckets[0].getPath().getName());
         } else if (numBase == 2) {
           // The new base dir now has two bucket files, since the delta dir has two bucket files
-          Assert.assertEquals("base_10000002_v0000031", parent.getName());
+          Assert.assertEquals("base_10000002_v0000016", parent.getName());
           Assert.assertEquals(2, buckets.length);
           Assert.assertEquals("bucket_00000", buckets[0].getPath().getName());
         }
@@ -1030,16 +1013,16 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     // 6. Let Cleaner delete obsolete files/dirs
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
     // Before Cleaner, there should be 8 items:
-    // 2 original files, 2 delta directories (1 files each), 1 delete_delta directory (1 file) and 2 base directories (with one and two files respectively)
+    // 1 original file, 2 delta directories (1 files each), 1 delete_delta directory (1 file) and 2 base directories (with one and two files respectively)
 
-    Assert.assertEquals(8, status.length);
+    Assert.assertEquals(7, status.length);
     runCleaner(hiveConf);
     runCleaner(hiveConf);
-    // There should be only 1 directory left: base_0000001.
+    // There should be only 1 directory left: base_00000016
     // Original bucket files, delta directories and previous base directory should have been cleaned up. Only one base with 2 files.
     status = listFilesByTable(fs, Table.NONACIDNESTEDPART);
     Assert.assertEquals(2, status.length);
-    Assert.assertEquals("base_10000002_v0000031", status[0].getPath().getParent().getName());
+    Assert.assertEquals("base_10000002_v0000016", status[0].getPath().getParent().getName());
     FileStatus[] buckets = fs.listStatus(status[0].getPath().getParent(), FileUtils.HIDDEN_FILES_PATH_FILTER);
     Arrays.sort(buckets);
     Assert.assertEquals(2, buckets.length);
@@ -1244,9 +1227,14 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
 
     MetastoreConf.setTimeVar(hiveConf, MetastoreConf.ConfVars.ACID_HOUSEKEEPER_SERVICE_INTERVAL, 10,
         TimeUnit.MILLISECONDS);
+    MetastoreConf.setTimeVar(hiveConf, MetastoreConf.ConfVars.COMPACTION_HOUSEKEEPER_SERVICE_INTERVAL, 10,
+        TimeUnit.MILLISECONDS);
     MetastoreTaskThread houseKeeper = new AcidHouseKeeperService();
+    MetastoreTaskThread compactionHouseKeeper = new CompactionHouseKeeperService();
     houseKeeper.setConf(hiveConf);
+    compactionHouseKeeper.setConf(hiveConf);
     houseKeeper.run();
+    compactionHouseKeeper.run();
     checkCompactionState(new CompactionsByState(numDidNotInitiateCompactions,numFailedCompactions,0,0,0,0,numFailedCompactions + numDidNotInitiateCompactions), countCompacts(txnHandler));
 
     txnHandler.compact(new CompactionRequest("default", tblName, CompactionType.MAJOR));
@@ -1260,6 +1248,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     checkCompactionState(new CompactionsByState(numDidNotInitiateCompactions,numFailedCompactions + 2,0,0,0,0,numFailedCompactions + 2 + numDidNotInitiateCompactions), countCompacts(txnHandler));
 
     houseKeeper.run();
+    compactionHouseKeeper.run();
     //COMPACTOR_HISTORY_RETENTION_FAILED failed compacts left (and no other since we only have failed ones here)
     checkCompactionState(new CompactionsByState(
       MetastoreConf.getIntVar(hiveConf, MetastoreConf.ConfVars.COMPACTOR_HISTORY_RETENTION_DID_NOT_INITIATE),
@@ -1287,6 +1276,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
 
     runCleaner(hiveConf); // transition to Success state
     houseKeeper.run();
+    compactionHouseKeeper.run();
     checkCompactionState(new CompactionsByState(
             MetastoreConf.getIntVar(hiveConf, MetastoreConf.ConfVars.COMPACTOR_HISTORY_RETENTION_DID_NOT_INITIATE),
             MetastoreConf.getIntVar(hiveConf, MetastoreConf.ConfVars.COMPACTOR_HISTORY_RETENTION_FAILED), 0, 0, 1, 0,
@@ -1323,49 +1313,6 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
 
     verifyDeltaDir(1, tblName, "");
     verifyBaseDir(1, tblName, "");
-  }
-
-  /**
-   * Make sure there's no FileSystem$Cache$Key leak due to UGI use
-   * @throws Exception
-   */
-  @Test
-  public void testFileSystemUnCaching() throws Exception {
-    int cacheSizeBefore;
-    int cacheSizeAfter;
-
-    // get the size of cache BEFORE
-    cacheSizeBefore = getFileSystemCacheSize();
-
-    // Insert a row to ACID table
-    runStatementOnDriver("insert into " + Table.ACIDTBL + "(a,b) values(1,2)");
-
-    // Perform a major compaction
-    runStatementOnDriver("alter table " + Table.ACIDTBL + " compact 'major'");
-    runWorker(hiveConf);
-    runCleaner(hiveConf);
-
-    // get the size of cache AFTER
-    cacheSizeAfter = getFileSystemCacheSize();
-
-    Assert.assertEquals(cacheSizeBefore, cacheSizeAfter);
-  }
-
-  private int getFileSystemCacheSize() throws Exception {
-    try {
-      Field cache = FileSystem.class.getDeclaredField("CACHE");
-      cache.setAccessible(true);
-      Object o = cache.get(null); // FileSystem.CACHE
-
-      Field mapField = o.getClass().getDeclaredField("map");
-      mapField.setAccessible(true);
-      Map map = (HashMap)mapField.get(o); // FileSystem.CACHE.map
-
-      return map.size();
-    } catch (NoSuchFieldException e) {
-      System.out.println(e);
-    }
-    return 0;
   }
 
   private static class CompactionsByState {
@@ -1549,7 +1496,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
 
   private void writeBetweenWorkerAndCleanerForVariousTblProperties(String tblProperties) throws Exception {
     String tblName = "hive12352";
-    runStatementOnDriver("drop table if exists " + tblName);
+    dropTables(tblName);
     runStatementOnDriver("CREATE TABLE " + tblName + "(a INT, b STRING) " +
       " CLUSTERED BY(a) INTO 1 BUCKETS" + //currently ACID requires table to be bucketed
       " STORED AS ORC  TBLPROPERTIES ( " + tblProperties + " )");
@@ -1580,8 +1527,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     FileStatus[] status = fs.listStatus(new Path(getWarehouseDir() + "/" + tblName.toLowerCase()),
         FileUtils.HIDDEN_FILES_PATH_FILTER);
     Set<String> expectedDeltas = new HashSet<>();
-    expectedDeltas.add("delete_delta_0000001_0000002_v0000021");
-    expectedDeltas.add("delta_0000001_0000002_v0000021");
+    expectedDeltas.add("delete_delta_0000001_0000002_v0000008");
+    expectedDeltas.add("delta_0000001_0000002_v0000008");
     expectedDeltas.add("delete_delta_0000003_0000003_0000");
     Set<String> actualDeltas = new HashSet<>();
     for(FileStatus file : status) {
@@ -1599,8 +1546,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     status = fs.listStatus(new Path(getWarehouseDir() + "/" + tblName.toLowerCase()),
         FileUtils.HIDDEN_FILES_PATH_FILTER);
     expectedDeltas = new HashSet<>();
-    expectedDeltas.add("delete_delta_0000001_0000004_v0000026");
-    expectedDeltas.add("delta_0000001_0000004_v0000026");
+    expectedDeltas.add("delete_delta_0000001_0000004_v0000013");
+    expectedDeltas.add("delta_0000001_0000004_v0000013");
     actualDeltas = new HashSet<>();
     for(FileStatus file : status) {
       actualDeltas.add(file.getPath().getName());
@@ -2444,6 +2391,10 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     // Keep an open txn which refers to the aborted txn.
     Context ctx = new Context(hiveConf);
     HiveTxnManager txnMgr = TxnManagerFactory.getTxnManagerFactory().getTxnManager(hiveConf);
+    // Txn is not considered committed or aborted until TXN_OPENTXN_TIMEOUT expires
+    // See MinOpenTxnIdWaterMarkFunction, OpenTxnTimeoutLowBoundaryTxnIdHandler
+    // TODO: revisit wait logic
+    waitUntilAllTxnFinished();
     txnMgr.openTxn(ctx, "u1");
     txnMgr.getValidTxns();
 
@@ -2799,7 +2750,7 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_FAIL_LOAD_DYNAMIC_PARTITION, true);
     runStatementOnDriverWithAbort("update " + Table.ACIDTBLPART + " set b=a+2 where a<5");
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_TEST_MODE_FAIL_LOAD_DYNAMIC_PARTITION, false);
-    verifyDeltaDirAndResult(2, Table.ACIDTBLPART.toString(), "p=p1", resultData1);
+    verifyDeltaDirAndResult(3, Table.ACIDTBLPART.toString(), "p=p1", resultData1);
     verifyDeleteDeltaDir(1, Table.ACIDTBLPART.toString(), "p=p1");
 
     int count = TestTxnDbUtil
@@ -3346,8 +3297,11 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
 
     // Run AcidHouseKeeperService to cleanup the COMPLETED_TXN_COMPONENTS.
     MetastoreTaskThread houseKeeper = new AcidHouseKeeperService();
+    MetastoreTaskThread compactionHouseKeeper = new CompactionHouseKeeperService();
     houseKeeper.setConf(hiveConf);
+    compactionHouseKeeper.setConf(hiveConf);
     houseKeeper.run();
+    compactionHouseKeeper.run();
 
     // Check whether the table is compacted.
     fileStatuses = fs.globStatus(new Path(getWarehouseDir() + "/" + tableName + "/*"));
@@ -3371,8 +3325,8 @@ public class TestTxnCommands2 extends TxnCommandsBaseForTests {
     String oldDelta3 = "delta_0000003_0000003_0000";
     String oldDelta4 = "delta_0000004_0000004_0000";
 
-    String expectedDelta1 = p1 + "/delta_0000001_0000002_v0000021";
-    String expectedDelta2 = p2 + "/delta_0000003_0000004_v0000023";
+    String expectedDelta1 = p1 + "/delta_0000001_0000002_v0000009";
+    String expectedDelta2 = p2 + "/delta_0000003_0000004_v0000011";
 
     runStatementOnDriver("insert into " + Table.ACIDTBLPART + " partition(p='p1') (a,b) values(1,2)");
     runStatementOnDriver("insert into " + Table.ACIDTBLPART + " partition(p='p1') (a,b) values(3,4)");

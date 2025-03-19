@@ -22,6 +22,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.metadata.HiveUtils;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
+import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.ParseUtils;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.parse.rewrite.sql.COWWithClauseBuilder;
@@ -44,9 +45,13 @@ public class CopyOnWriteDeleteRewriter implements Rewriter<DeleteStatement> {
   public ParseUtils.ReparseResult rewrite(Context context, DeleteStatement deleteBlock)
       throws SemanticException {
 
-    Tree wherePredicateNode = deleteBlock.getWhereTree().getChild(0);
-    String whereClause = context.getTokenRewriteStream().toString(
-        wherePredicateNode.getTokenStartIndex(), wherePredicateNode.getTokenStopIndex());
+    ASTNode whereTree = deleteBlock.getWhereTree();
+    String whereClause = "true";
+    if (whereTree != null) {
+      Tree wherePredicateNode = whereTree.getChild(0);
+      whereClause = context.getTokenRewriteStream()
+          .toString(wherePredicateNode.getTokenStartIndex(), wherePredicateNode.getTokenStopIndex());
+    }
     String filePathCol = HiveUtils.unparseIdentifier(VirtualColumn.FILE_PATH.getName(), conf);
 
     MultiInsertSqlGenerator sqlGenerator = sqlGeneratorFactory.createSqlGenerator();
@@ -65,7 +70,8 @@ public class CopyOnWriteDeleteRewriter implements Rewriter<DeleteStatement> {
     sqlGenerator.append(sqlGenerator.getTargetTableFullName());
 
     // Add the inverted where clause, since we want to hold the records which doesn't satisfy the condition.
-    sqlGenerator.append("\nwhere NOT (").append(whereClause).append(")");
+    sqlGenerator.append("\nwhere ");
+    sqlGenerator.append("( NOT(%s) OR (%s) IS NULL )".replace("%s", whereClause));
     sqlGenerator.append("\n");
     // Add the file path filter that matches the delete condition.
     sqlGenerator.append("AND ").append(filePathCol);

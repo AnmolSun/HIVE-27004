@@ -453,8 +453,14 @@ public class DummyRawStoreForJdoConnection implements RawStore {
 
   @Override
   public List<String> listPartitionNames(String catName, String dbName, String tblName, String defaultPartName,
-      byte[] exprBytes, String order, short maxParts) throws MetaException, NoSuchObjectException {
+      byte[] exprBytes, String order, int maxParts) throws MetaException, NoSuchObjectException {
 
+    return Collections.emptyList();
+  }
+
+  @Override
+  public List<String> listPartitionNamesByFilter(String catName, String dbName, String tblName,
+      GetPartitionsArgs args) throws MetaException, NoSuchObjectException {
     return Collections.emptyList();
   }
 
@@ -914,6 +920,12 @@ public class DummyRawStoreForJdoConnection implements RawStore {
     return false;
   }
 
+  @Override
+  public boolean deleteTableColumnStatistics(String catName, String dbName, String tableName,
+                                             List<String> colNames, String engine)
+          throws NoSuchObjectException, MetaException, InvalidObjectException {
+    return false;
+  }
 
   @Override
   public boolean deletePartitionColumnStatistics(String catName, String dbName, String tableName,
@@ -921,7 +933,14 @@ public class DummyRawStoreForJdoConnection implements RawStore {
     throws NoSuchObjectException, MetaException, InvalidObjectException,
     InvalidInputException {
     return false;
+  }
 
+  @Override
+  public boolean deletePartitionColumnStatistics(String catName, String dbName, String tableName,
+                                                 List<String> partNames, List<String> colNames, String engine)
+          throws NoSuchObjectException, MetaException, InvalidObjectException,
+          InvalidInputException {
+    return false;
   }
 
   @Override
@@ -1032,6 +1051,12 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   @Override
   public List<String> getFunctions(String catName, String dbName, String pattern)
       throws MetaException {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public <T> List<T> getFunctionsRequest(String catName, String dbName,
+      String pattern, boolean isReturnNames) throws MetaException {
     return Collections.emptyList();
   }
 

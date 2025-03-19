@@ -20,6 +20,7 @@ package org.apache.hadoop.hive.ql.parse;
 import org.apache.hadoop.hive.cli.CliSessionState;
 import org.apache.hadoop.hive.common.repl.ReplScope;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfForTest;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.MetastoreTaskThread;
@@ -34,8 +35,8 @@ import org.apache.hadoop.hive.metastore.messaging.event.filters.AndFilter;
 import org.apache.hadoop.hive.metastore.messaging.event.filters.CatalogFilter;
 import org.apache.hadoop.hive.metastore.messaging.event.filters.EventBoundaryFilter;
 import org.apache.hadoop.hive.metastore.messaging.event.filters.ReplEventFilter;
-import org.apache.hadoop.hive.metastore.txn.AcidHouseKeeperService;
-import org.apache.hadoop.hive.metastore.txn.AcidTxnCleanerService;
+import org.apache.hadoop.hive.metastore.txn.service.AcidHouseKeeperService;
+import org.apache.hadoop.hive.metastore.txn.service.AcidTxnCleanerService;
 import org.apache.hadoop.hive.metastore.utils.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.utils.TestTxnDbUtil;
 import org.apache.hadoop.hive.ql.exec.repl.util.ReplUtils;
@@ -98,7 +99,7 @@ public class TestTimedOutTxnNotificationLogging {
   }
 
   private void setConf() {
-    hiveConf = new HiveConf();
+    hiveConf = new HiveConfForTest(getClass());
     MetastoreConf.setBoolVar(hiveConf, MetastoreConf.ConfVars.HIVE_IN_TEST, true);
     MetastoreConf.setVar(hiveConf, MetastoreConf.ConfVars.WAREHOUSE, "/tmp");
     MetastoreConf.setTimeVar(hiveConf, MetastoreConf.ConfVars.TXN_TIMEOUT, 1, TimeUnit.SECONDS);

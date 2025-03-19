@@ -50,7 +50,6 @@
       </excludes>
 
       <includes>
-        <include>.arcconfig</include>
         <include>.checkstyle</include>
         <include>.gitattributes</include>
         <include>.gitignore</include>
@@ -106,11 +105,11 @@
         <include>standalone-metastore/metastore-common/**/*</include>
         <include>standalone-metastore/metastore-server/**/*</include>
         <include>standalone-metastore/metastore-tools/**/*</include>
+        <include>standalone-metastore/metastore-rest-catalog/**/*</include>
         <include>standalone-metastore/src/assembly/src.xml</include>
         <include>standalone-metastore/pom.xml</include>
         <include>streaming/**/*</include>
         <include>testutils/**/*</include>
-        <include>upgrade-acid/**/*</include>
         <include>vector-code-gen/**/*</include>
         <include>kudu-handler/**/*</include>
         <include>parser/**/*</include>

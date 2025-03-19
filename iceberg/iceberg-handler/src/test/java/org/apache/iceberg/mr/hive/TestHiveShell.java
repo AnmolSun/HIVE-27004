@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.conf.MetastoreConf;
 import org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
@@ -202,15 +203,14 @@ public class TestHiveShell {
 
     // Speed up test execution
     hiveConf.setLongVar(HiveConf.ConfVars.HIVE_COUNTERS_PULL_INTERVAL, 1L);
-    hiveConf.setBoolVar(HiveConf.ConfVars.HIVESTATSAUTOGATHER, false);
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_STATS_AUTOGATHER, false);
 
     // Resource configuration
     hiveConf.setInt("mapreduce.map.memory.mb", 1024);
 
     // Tez configuration
     hiveConf.setBoolean("tez.local.mode", true);
-    // TODO: enable below option once HIVE-26445 is investigated
-    // hiveConf.setBoolean("tez.local.mode.without.network", true);
+    hiveConf.setBoolean("tez.local.mode.without.network", true);
 
     // Disable vectorization for HiveIcebergInputFormat
     hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_VECTORIZATION_ENABLED, false);
@@ -228,6 +228,9 @@ public class TestHiveShell {
     // set lifecycle hooks
     hiveConf.setVar(HiveConf.ConfVars.HIVE_QUERY_LIFETIME_HOOKS, HiveIcebergQueryLifeTimeHook.class.getName());
 
+    MetastoreConf.setBoolVar(hiveConf, MetastoreConf.ConfVars.TRY_DIRECT_SQL, true);
+
+    hiveConf.setBoolVar(HiveConf.ConfVars.HIVE_QUERY_HISTORY_ENABLED, false);
     return hiveConf;
   }
 }

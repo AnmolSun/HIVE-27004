@@ -193,6 +193,8 @@ public class TestReplicationScenarios {
   static void internalBeforeClassSetup(Map<String, String> additionalProperties)
       throws Exception {
     hconf = new HiveConf(TestReplicationScenarios.class);
+    //TODO: HIVE-28044: Replication tests to run on Tez
+    hconf.setVar(HiveConf.ConfVars.HIVE_EXECUTION_ENGINE, "mr");
     String metastoreUri = System.getProperty("test."+MetastoreConf.ConfVars.THRIFT_URIS.getHiveName());
     if (metastoreUri != null) {
       hconf.set(MetastoreConf.ConfVars.THRIFT_URIS.getHiveName(), metastoreUri);
@@ -221,7 +223,7 @@ public class TestReplicationScenarios {
         "org.apache.hadoop.hive.metastore.InjectableBehaviourObjectStore");
     hconf.set(HiveConf.ConfVars.HIVE_METASTORE_WAREHOUSE_EXTERNAL.varname, "/tmp/warehouse/external");
     hconf.setBoolVar(HiveConf.ConfVars.HIVE_OPTIMIZE_METADATA_QUERIES, true);
-    hconf.setBoolVar(HiveConf.ConfVars.HIVESTATSAUTOGATHER, true);
+    hconf.setBoolVar(HiveConf.ConfVars.HIVE_STATS_AUTOGATHER, true);
     hconf.setBoolVar(HiveConf.ConfVars.HIVE_STATS_RELIABLE, true);
     hconf.setBoolVar(HiveConf.ConfVars.REPL_RUN_DATA_COPY_TASKS_ON_TARGET, false);
     hconf.setBoolVar(HiveConf.ConfVars.REPL_BATCH_INCREMENTAL_EVENTS, false);
@@ -4683,12 +4685,12 @@ public class TestReplicationScenarios {
       verifyFail("REPL DUMP " + primaryDbName, driver);
 
       metric = collector.getMetrics().getLast();
-      assertEquals(metric.getProgress().getStatus(), Status.SKIPPED);
+      assertEquals(metric.getProgress().getStatus(), Status.FAILED_ADMIN);
       assertEquals(metric.getProgress().getStages().get(0).getErrorLogPath(), nonRecoverableFile.toString());
 
       verifyFail("REPL DUMP " + primaryDbName, driver);
       metric = collector.getMetrics().getLast();
-      assertEquals(metric.getProgress().getStatus(), Status.SKIPPED);
+      assertEquals(metric.getProgress().getStatus(), Status.FAILED_ADMIN);
       assertEquals(metric.getProgress().getStages().get(0).getErrorLogPath(), nonRecoverableFile.toString());
 
       fs.delete(nonRecoverableFile, true);
@@ -4711,7 +4713,7 @@ public class TestReplicationScenarios {
       verifyFail("REPL LOAD " + primaryDbName + " INTO " + replicaDbName, driverMirror);
 
       metric = collector.getMetrics().getLast();
-      assertEquals(metric.getProgress().getStatus(), Status.SKIPPED);
+      assertEquals(metric.getProgress().getStatus(), Status.FAILED_ADMIN);
       assertEquals(metric.getProgress().getStages().get(0).getErrorLogPath(), nonRecoverableFile.toString());
     } finally {
       isMetricsEnabledForTests(false);

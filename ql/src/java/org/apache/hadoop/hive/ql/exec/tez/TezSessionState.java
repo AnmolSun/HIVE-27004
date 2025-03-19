@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
@@ -283,7 +284,7 @@ public class TezSessionState {
     } else {
       this.resources = new HiveResources(createTezDir(sessionId, "resources"));
       ensureLocalResources(conf, additionalFilesNotFromConf);
-      LOG.info("Created new resources: " + resources);
+      LOG.info("Created new resources: " + this.resources);
     }
 
     // unless already installed on all the cluster nodes, we'll have to
@@ -1006,5 +1007,11 @@ public class TezSessionState {
     }
     this.resources = resources;
     return dir;
+  }
+
+  public String getAppMasterUri() {
+    return Optional.of(getSession()).map(
+            tezClient -> tezClient.getAmHost() + ":" + tezClient.getAmPort())
+        .get();
   }
 }
